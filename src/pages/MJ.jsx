@@ -30,11 +30,10 @@ export default function MJ({ session }) {
   const [modeCritique, setModeCritique] = useState("tous");
   const [sessionId, setSessionId] = useState(null);
   const [showQR, setShowQR] = useState(false);
+  const [joueurs, setJoueurs] = useState([]);
 
-  // Crée ou récupère la session de jeu du MJ
   useEffect(() => {
     const initSession = async () => {
-      // Cherche une session existante pour ce MJ
       const { data } = await supabase
         .from("sessions")
         .select("id")
@@ -44,7 +43,6 @@ export default function MJ({ session }) {
       if (data) {
         setSessionId(data.id);
       } else {
-        // Crée une nouvelle session
         const { data: newSession } = await supabase
           .from("sessions")
           .insert([{ mj_id: session.user.id }])
@@ -56,7 +54,28 @@ export default function MJ({ session }) {
     initSession();
   }, [session]);
 
-  // Écoute les lancers des joueurs en temps réel
+  // Écoute les joueurs qui rejoignent
+  useEffect(() => {
+    if (!sessionId) return;
+
+    // Charge les joueurs existants
+    supabase.from("joueurs").select("*").eq("session_id", sessionId)
+      .then(({ data }) => { if (data) setJoueurs(data); });
+
+    const channel = supabase
+      .channel("joueurs-session")
+      .on("postgres_changes",
+        { event: "INSERT", schema: "public", table: "joueurs", filter: `session_id=eq.${sessionId}` },
+        (payload) => {
+          setJoueurs((prev) => [...prev, payload.new]);
+        }
+      )
+      .subscribe();
+
+    return () => supabase.removeChannel(channel);
+  }, [sessionId]);
+
+  // Écoute les lancers de tous les joueurs
   useEffect(() => {
     if (!sessionId) return;
     const channel = supabase
@@ -65,16 +84,22 @@ export default function MJ({ session }) {
         { event: "INSERT", schema: "public", table: "lancers", filter: `session_id=eq.${sessionId}` },
         (payload) => {
           const data = payload.new;
-          if (data && Object.keys(data).length > 1) {
+          if (data && data.valeur) {
             const status = getStatus(data.valeur, data.bonus, data.total, data.faces, data.seuil, modeCritique);
-            const roll = { ...data, status };
-            setHistory((prev) => [roll, ...prev].slice(0, 30));
+            setHistory((prev) => [{ ...data, status }, ...prev].slice(0, 30));
           }
         }
       )
       .subscribe();
     return () => supabase.removeChannel(channel);
   }, [sessionId]);
+
+  // Met à jour les modifs d'un joueur
+  const updateJoueur = async (joueurId, field, value) => {
+    const parsed = parseInt(value) || 0;
+    setJoueurs((prev) => prev.map((j) => j.id === joueurId ? { ...j, [field]: parsed } : j));
+    await supabase.from("joueurs").update({ [field]: parsed }).eq("id", joueurId);
+  };
 
   const lancerDe = useCallback(async (faces, secret = false) => {
     if (rolling) return;
@@ -104,15 +129,12 @@ export default function MJ({ session }) {
   }, [rolling, bonus, seuil, modeCritique, sessionId]);
 
   const resultColor = lastRoll?.status ? colors[lastRoll.status.cls] : "#e0e0e0";
-  const joinUrl = sessionId
-    ? `${window.location.origin}/rejoindre/${sessionId}`
-    : null;
+  const joinUrl = sessionId ? `${window.location.origin}/rejoindre/${sessionId}` : null;
 
   return (
     <div style={{
       minHeight: "100vh", background: "#1a1a2e",
-      fontFamily: "'Segoe UI', Tahoma, Geneva, Verdana, sans-serif",
-      color: "white",
+      fontFamily: "'Segoe UI', Tahoma, Geneva, Verdana, sans-serif", color: "white",
     }}>
       {/* Header */}
       <div style={{
@@ -122,28 +144,22 @@ export default function MJ({ session }) {
         <h1 style={{ margin: 0, color: "#e94560", fontSize: "1.3rem" }}>⚔️ Espace MJ</h1>
         <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
           <span style={{ color: "#95a5a6", fontSize: 13 }}>{session.user.email}</span>
-          <button
-            onClick={() => setShowQR(!showQR)}
-            style={{
-              background: "#0f3460", color: "white", border: "1px solid #e94560",
-              padding: "6px 14px", borderRadius: 6, cursor: "pointer", fontWeight: "bold", fontSize: 13,
-            }}
-          >
+          <button onClick={() => setShowQR(!showQR)} style={{
+            background: "#0f3460", color: "white", border: "1px solid #e94560",
+            padding: "6px 14px", borderRadius: 6, cursor: "pointer", fontWeight: "bold", fontSize: 13,
+          }}>
             {showQR ? "Fermer QR" : "📱 QR Joueurs"}
           </button>
-          <button
-            onClick={() => supabase.auth.signOut()}
-            style={{
-              background: "transparent", color: "#95a5a6", border: "1px solid #0f3460",
-              padding: "6px 14px", borderRadius: 6, cursor: "pointer", fontSize: 13,
-            }}
-          >
+          <button onClick={() => supabase.auth.signOut()} style={{
+            background: "transparent", color: "#95a5a6", border: "1px solid #0f3460",
+            padding: "6px 14px", borderRadius: 6, cursor: "pointer", fontSize: 13,
+          }}>
             Déconnexion
           </button>
         </div>
       </div>
 
-      <div style={{ maxWidth: 900, margin: "0 auto", padding: "24px 16px", display: "grid", gridTemplateColumns: "1fr 1fr", gap: 20 }}>
+      <div style={{ maxWidth: 1000, margin: "0 auto", padding: "24px 16px", display: "grid", gridTemplateColumns: "1fr 1fr", gap: 20 }}>
 
         {/* Colonne gauche — Dés MJ */}
         <div>
@@ -165,23 +181,23 @@ export default function MJ({ session }) {
             </div>
           )}
 
-          {/* Modificateurs */}
+          {/* Modifs MJ */}
           <div style={{
             display: "flex", justifyContent: "space-around",
             background: "#16213e", border: "1px solid #0f3460",
             padding: 15, borderRadius: 10, marginBottom: 12,
           }}>
+            <div style={{ textAlign: "center", color: "#95a5a6", fontSize: 11, marginBottom: 6, gridColumn: "1/-1" }}>
+            </div>
             {[
-              { label: "Modificateur", value: bonus, set: setBonus },
-              { label: "Seuil", value: seuil, set: setSeuil },
+              { label: "Mon modificateur", value: bonus, set: setBonus },
+              { label: "Mon seuil", value: seuil, set: setSeuil },
             ].map(({ label, value, set }) => (
               <div key={label} style={{ display: "flex", flexDirection: "column", gap: 6, alignItems: "center" }}>
                 <label style={{ fontSize: "0.75rem", textTransform: "uppercase", letterSpacing: 1, color: "#95a5a6" }}>
                   {label}
                 </label>
-                <input
-                  type="number" value={value}
-                  onChange={(e) => set(e.target.value)}
+                <input type="number" value={value} onChange={(e) => set(e.target.value)}
                   style={{
                     background: "#1a1a2e", border: "1px solid #e94560", color: "white",
                     padding: 8, width: 70, borderRadius: 5, textAlign: "center",
@@ -202,8 +218,7 @@ export default function MJ({ session }) {
               Critiques :
             </span>
             {["tous", "d20"].map((mode) => (
-              <button key={mode}
-                onClick={() => setModeCritique(mode)}
+              <button key={mode} onClick={() => setModeCritique(mode)}
                 style={{
                   padding: "5px 14px", borderRadius: 20, border: "none", cursor: "pointer",
                   fontWeight: "bold", fontSize: 12,
@@ -248,7 +263,7 @@ export default function MJ({ session }) {
             )}
           </div>
 
-          {/* Dés */}
+          {/* Dés normaux */}
           <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 8, marginBottom: 8 }}>
             {FACES.map((f) => (
               <button key={f} onClick={() => lancerDe(f)} disabled={rolling}
@@ -264,13 +279,12 @@ export default function MJ({ session }) {
             ))}
           </div>
 
-          {/* Lancer secret */}
+          {/* Dés secrets */}
           <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 8 }}>
             {FACES.map((f) => (
               <button key={f} onClick={() => lancerDe(f, true)} disabled={rolling}
                 style={{
-                  background: "#1a1a2e", color: "#f1c40f",
-                  border: "1px solid #f1c40f",
+                  background: "#1a1a2e", color: "#f1c40f", border: "1px solid #f1c40f",
                   padding: "8px 4px", borderRadius: 6, cursor: "pointer",
                   fontWeight: "bold", fontSize: 11, transition: "all 0.2s",
                 }}
@@ -279,43 +293,94 @@ export default function MJ({ session }) {
               </button>
             ))}
           </div>
-          <p style={{ color: "#95a5a6", fontSize: 11, textAlign: "center", margin: "6px 0 0" }}>
+          <p style={{ color: "#555", fontSize: 11, textAlign: "center", margin: "6px 0 0" }}>
             Dés secrets — invisibles pour les joueurs
           </p>
         </div>
 
-        {/* Colonne droite — Historique global */}
-        <div>
-          <h3 style={{ color: "#95a5a6", fontSize: "0.9rem", textTransform: "uppercase", letterSpacing: 1, marginTop: 0 }}>
-            Historique de la session
-          </h3>
-          <div style={{
-            background: "#16213e", border: "1px solid #0f3460", borderRadius: 10,
-            maxHeight: 600, overflowY: "auto",
-          }}>
-            {history.length === 0 && (
-              <p style={{ color: "#95a5a6", textAlign: "center", padding: 20, fontSize: 14 }}>
-                Les lancers apparaîtront ici…
-              </p>
-            )}
-            {history.map((r) => (
-              <div key={r.id} style={{
-                display: "flex", justifyContent: "space-between", alignItems: "center",
-                padding: "10px 14px", borderBottom: "1px solid #0f3460",
-                opacity: r.secret ? 0.7 : 1,
+        {/* Colonne droite */}
+        <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+
+          {/* Joueurs connectés */}
+          <div>
+            <h3 style={{ color: "#95a5a6", fontSize: "0.85rem", textTransform: "uppercase", letterSpacing: 1, marginTop: 0 }}>
+              Joueurs connectés ({joueurs.length})
+            </h3>
+            {joueurs.length === 0 ? (
+              <div style={{
+                background: "#16213e", border: "1px solid #0f3460", borderRadius: 10,
+                padding: 20, textAlign: "center", color: "#95a5a6", fontSize: 14,
               }}>
-                <span style={{ color: "#95a5a6", fontSize: 12 }}>
-                  {r.auteur || "Joueur"} · d{r.faces}
-                  {r.secret && " 🔒"}
-                </span>
-                <span style={{ fontWeight: "bold", fontSize: 16 }}>{r.total}</span>
-                {r.status && (
-                  <span style={{ color: colors[r.status.cls], fontSize: 11 }}>
-                    {r.status.label}
-                  </span>
-                )}
+                En attente de joueurs…
               </div>
-            ))}
+            ) : (
+              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                {joueurs.map((j) => (
+                  <div key={j.id} style={{
+                    background: "#16213e", border: "1px solid #0f3460", borderRadius: 10,
+                    padding: "12px 14px", display: "flex", alignItems: "center", gap: 12,
+                  }}>
+                    <span style={{ fontWeight: "bold", flex: 1 }}>⚔️ {j.nom}</span>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <label style={{ fontSize: 11, color: "#95a5a6" }}>Bonus</label>
+                      <input type="number"
+                        value={j.bonus}
+                        onChange={(e) => updateJoueur(j.id, "bonus", e.target.value)}
+                        style={{
+                          width: 52, background: "#1a1a2e", border: "1px solid #e94560",
+                          color: "white", padding: "4px 6px", borderRadius: 4,
+                          textAlign: "center", fontSize: 13, fontWeight: "bold",
+                        }}
+                      />
+                      <label style={{ fontSize: 11, color: "#95a5a6" }}>Seuil</label>
+                      <input type="number"
+                        value={j.seuil}
+                        onChange={(e) => updateJoueur(j.id, "seuil", e.target.value)}
+                        style={{
+                          width: 52, background: "#1a1a2e", border: "1px solid #0f3460",
+                          color: "white", padding: "4px 6px", borderRadius: 4,
+                          textAlign: "center", fontSize: 13, fontWeight: "bold",
+                        }}
+                      />
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Historique global */}
+          <div>
+            <h3 style={{ color: "#95a5a6", fontSize: "0.85rem", textTransform: "uppercase", letterSpacing: 1, marginTop: 0 }}>
+              Historique de la session
+            </h3>
+            <div style={{
+              background: "#16213e", border: "1px solid #0f3460", borderRadius: 10,
+              maxHeight: 400, overflowY: "auto",
+            }}>
+              {history.length === 0 && (
+                <p style={{ color: "#95a5a6", textAlign: "center", padding: 20, fontSize: 14 }}>
+                  Les lancers apparaîtront ici…
+                </p>
+              )}
+              {history.map((r) => (
+                <div key={r.id} style={{
+                  display: "flex", justifyContent: "space-between", alignItems: "center",
+                  padding: "10px 14px", borderBottom: "1px solid #0f3460",
+                  opacity: r.secret ? 0.7 : 1,
+                }}>
+                  <span style={{ color: "#95a5a6", fontSize: 12 }}>
+                    {r.auteur || "Joueur"} · d{r.faces}{r.secret && " 🔒"}
+                  </span>
+                  <span style={{ fontWeight: "bold", fontSize: 16 }}>{r.total}</span>
+                  {r.status && (
+                    <span style={{ color: colors[r.status.cls], fontSize: 11 }}>
+                      {r.status.label}
+                    </span>
+                  )}
+                </div>
+              ))}
+            </div>
           </div>
         </div>
       </div>
