@@ -1,0 +1,138 @@
+/* Configuration de base */
+body {
+  background-color: #1a1a2e; /* Bleu très sombre */
+  color: #e0e0e0;
+  font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  min-height: 100vh;
+  margin: 0;
+  padding-top: 50px;
+}
+
+.container {
+  max-width: 450px;
+  width: 90%;
+  background: #16213e;
+  padding: 25px;
+  border-radius: 15px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+  text-align: center;
+  border: 1px solid #0f3460;
+}
+
+h1 {
+  color: #e94560;
+  margin-top: 0;
+  font-size: 1.8rem;
+}
+
+/* Zone des réglages (Modificateur + Seuil) */
+.reglages {
+  display: flex;
+  justify-content: space-around;
+  background: #0f3460;
+  padding: 15px;
+  border-radius: 10px;
+  margin-bottom: 20px;
+}
+
+.champ {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+label {
+  font-size: 0.85rem;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: #95a5a6;
+}
+
+input {
+  background: #1a1a2e;
+  border: 1px solid #e94560;
+  color: white;
+  padding: 8px;
+  width: 70px;
+  border-radius: 5px;
+  text-align: center;
+  font-size: 1.1rem;
+  font-weight: bold;
+}
+
+/* Grille de dés */
+.dice-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 10px;
+  margin-bottom: 25px;
+}
+
+button {
+  background-color: #0f3460;
+  color: white;
+  border: 1px solid #e94560;
+  padding: 12px 5px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-weight: bold;
+  transition: all 0.2s;
+}
+
+button:hover {
+  background-color: #e94560;
+  transform: translateY(-2px);
+}
+
+/* Affichage du résultat */
+#resultat {
+  font-size: 2rem;
+  margin: 20px 0;
+  min-height: 80px; /* Évite que la page saute quand le résultat apparaît */
+}
+
+/* Historique */
+.historique {
+  margin-top: 20px;
+  text-align: left;
+  border-top: 1px solid #0f3460;
+  padding-top: 15px;
+}
+
+h3 {
+  font-size: 1rem;
+  color: #95a5a6;
+  margin-bottom: 10px;
+}
+
+#listeHistorique {
+  list-style: none;
+  padding: 0;
+  max-height: 200px;
+  overflow-y: auto;
+  background: #1a1a2e;
+  border-radius: 5px;
+}
+
+#listeHistorique li {
+  padding: 8px 12px;
+  border-bottom: 1px solid #16213e;
+  font-family: monospace;
+  font-size: 0.95rem;
+}
+
+#clearBtn {
+  margin-top: 10px;
+  background: transparent;
+  border: 1px solid #555;
+  font-size: 0.75rem;
+  width: 100%;
+}
+
+#clearBtn:hover {
+  background: #c0392b;
+  border-color: #c0392b;
+}
