@@ -4,6 +4,12 @@ import { supabase } from "../supabase";
 
 const FACES = [4, 6, 8, 10, 12, 20, 100];
 
+// Génère un code de 4 lettres aléatoires
+function genererCode() {
+  const lettres = "ABCDEFGHJKLMNPQRSTUVWXYZ";
+  return Array.from({ length: 4 }, () => lettres[Math.floor(Math.random() * lettres.length)]).join("");
+}
+
 function getStatus(valeur, bonus, total, faces, seuil, modeCritique) {
   const isCritActive = modeCritique === "tous" || faces === 20;
   if (isCritActive && valeur === faces) return { label: "🌟 RÉUSSITE CRITIQUE", cls: "crit-success" };
@@ -29,15 +35,16 @@ export default function MJ({ session }) {
   const [activeDie, setActiveDie] = useState(null);
   const [modeCritique, setModeCritique] = useState("tous");
   const [sessionId, setSessionId] = useState(null);
+  const [codeRoom, setCodeRoom] = useState(null);
   const [showQR, setShowQR] = useState(false);
   const [joueurs, setJoueurs] = useState([]);
 
-  // ✅ CORRIGÉ — récupère la session existante ou en crée une
   useEffect(() => {
     const initSession = async () => {
+      // Cherche session existante
       const { data } = await supabase
         .from("sessions")
-        .select("id")
+        .select("id, code")
         .eq("mj_id", session.user.id)
         .order("created_at", { ascending: false })
         .limit(1)
@@ -45,40 +52,63 @@ export default function MJ({ session }) {
 
       if (data) {
         setSessionId(data.id);
+        setCodeRoom(data.code);
       } else {
-        const { data: newSession } = await supabase
-          .from("sessions")
-          .insert([{ mj_id: session.user.id }])
-          .select()
-          .single();
-        if (newSession) setSessionId(newSession.id);
+        // Crée une nouvelle session avec un code unique
+        let code = genererCode();
+        let ok = false;
+        while (!ok) {
+          const { data: newSession, error } = await supabase
+            .from("sessions")
+            .insert([{ mj_id: session.user.id, code }])
+            .select()
+            .single();
+          if (!error && newSession) {
+            setSessionId(newSession.id);
+            setCodeRoom(newSession.code);
+            ok = true;
+          } else {
+            code = genererCode(); // Réessaie si code déjà pris
+          }
+        }
       }
     };
     initSession();
   }, [session]);
 
-  // Écoute les joueurs qui rejoignent
+  const chargerHistorique = useCallback(async (sid, mode) => {
+    if (!sid) return;
+    const { data } = await supabase
+      .from("lancers")
+      .select("*")
+      .eq("session_id", sid)
+      .order("created_at", { ascending: false })
+      .limit(30);
+    if (data) {
+      const withStatus = data.map((r) => ({
+        ...r,
+        status: getStatus(r.valeur, r.bonus, r.total, r.faces, r.seuil, mode)
+      }));
+      setHistory(withStatus);
+    }
+  }, []);
+
   useEffect(() => {
     if (!sessionId) return;
 
     supabase.from("joueurs").select("*").eq("session_id", sessionId)
       .then(({ data }) => { if (data) setJoueurs(data); });
 
-    const channel = supabase
+    chargerHistorique(sessionId, modeCritique);
+
+    const channelJoueurs = supabase
       .channel("joueurs-session")
       .on("postgres_changes",
         { event: "INSERT", schema: "public", table: "joueurs", filter: `session_id=eq.${sessionId}` },
         (payload) => { setJoueurs((prev) => [...prev, payload.new]); }
-      )
-      .subscribe();
+      ).subscribe();
 
-    return () => supabase.removeChannel(channel);
-  }, [sessionId]);
-
-  // Écoute les lancers de tous les joueurs
-  useEffect(() => {
-    if (!sessionId) return;
-    const channel = supabase
+    const channelLancers = supabase
       .channel("lancers-mj")
       .on("postgres_changes",
         { event: "INSERT", schema: "public", table: "lancers", filter: `session_id=eq.${sessionId}` },
@@ -87,11 +117,16 @@ export default function MJ({ session }) {
           if (data && data.valeur) {
             const status = getStatus(data.valeur, data.bonus, data.total, data.faces, data.seuil, modeCritique);
             setHistory((prev) => [{ ...data, status }, ...prev].slice(0, 30));
+          } else {
+            chargerHistorique(sessionId, modeCritique);
           }
         }
-      )
-      .subscribe();
-    return () => supabase.removeChannel(channel);
+      ).subscribe();
+
+    return () => {
+      supabase.removeChannel(channelJoueurs);
+      supabase.removeChannel(channelLancers);
+    };
   }, [sessionId]);
 
   const updateJoueur = async (joueurId, field, value) => {
@@ -114,7 +149,7 @@ export default function MJ({ session }) {
 
       const roll = { valeur, bonus: b, total, faces, seuil: s, status, id: Date.now(), secret, auteur: "MJ" };
       setLastRoll(roll);
-      setHistory((prev) => [roll, ...prev].slice(0, 30));
+      if (!secret) setHistory((prev) => [roll, ...prev].slice(0, 30));
       setRolling(false);
       setActiveDie(null);
 
@@ -128,30 +163,18 @@ export default function MJ({ session }) {
   }, [rolling, bonus, seuil, modeCritique, sessionId]);
 
   const resultColor = lastRoll?.status ? colors[lastRoll.status.cls] : "#e0e0e0";
-  const joinUrl = sessionId ? `${window.location.origin}/rejoindre/${sessionId}` : null;
+  const siteUrl = window.location.origin + "/rejoindre";
 
   return (
-    <div style={{
-      minHeight: "100vh", background: "#1a1a2e",
-      fontFamily: "'Segoe UI', Tahoma, Geneva, Verdana, sans-serif", color: "white",
-    }}>
-      <div style={{
-        background: "#16213e", borderBottom: "1px solid #0f3460",
-        padding: "12px 24px", display: "flex", justifyContent: "space-between", alignItems: "center",
-      }}>
+    <div style={{ minHeight: "100vh", background: "#1a1a2e", fontFamily: "'Segoe UI', Tahoma, Geneva, Verdana, sans-serif", color: "white" }}>
+      <div style={{ background: "#16213e", borderBottom: "1px solid #0f3460", padding: "12px 24px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
         <h1 style={{ margin: 0, color: "#e94560", fontSize: "1.3rem" }}>⚔️ Espace MJ</h1>
         <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
           <span style={{ color: "#95a5a6", fontSize: 13 }}>{session.user.email}</span>
-          <button onClick={() => setShowQR(!showQR)} style={{
-            background: "#0f3460", color: "white", border: "1px solid #e94560",
-            padding: "6px 14px", borderRadius: 6, cursor: "pointer", fontWeight: "bold", fontSize: 13,
-          }}>
+          <button onClick={() => setShowQR(!showQR)} style={{ background: "#0f3460", color: "white", border: "1px solid #e94560", padding: "6px 14px", borderRadius: 6, cursor: "pointer", fontWeight: "bold", fontSize: 13 }}>
             {showQR ? "Fermer QR" : "📱 QR Joueurs"}
           </button>
-          <button onClick={() => supabase.auth.signOut()} style={{
-            background: "transparent", color: "#95a5a6", border: "1px solid #0f3460",
-            padding: "6px 14px", borderRadius: 6, cursor: "pointer", fontSize: 13,
-          }}>
+          <button onClick={() => supabase.auth.signOut()} style={{ background: "transparent", color: "#95a5a6", border: "1px solid #0f3460", padding: "6px 14px", borderRadius: 6, cursor: "pointer", fontSize: 13 }}>
             Déconnexion
           </button>
         </div>
@@ -159,26 +182,27 @@ export default function MJ({ session }) {
 
       <div style={{ maxWidth: 1000, margin: "0 auto", padding: "24px 16px", display: "grid", gridTemplateColumns: "1fr 1fr", gap: 20 }}>
         <div>
-          {showQR && joinUrl && (
-            <div style={{
-              background: "#16213e", border: "1px solid #0f3460", borderRadius: 12,
-              padding: 20, textAlign: "center", marginBottom: 16,
-            }}>
-              <p style={{ color: "#95a5a6", fontSize: 13, margin: "0 0 12px" }}>
-                Les joueurs scannent ce QR pour rejoindre
-              </p>
-              <div style={{ background: "white", display: "inline-block", padding: 12, borderRadius: 8 }}>
-                <QRCodeSVG value={joinUrl} size={160} />
-              </div>
-              <p style={{ color: "#95a5a6", fontSize: 11, marginTop: 10, wordBreak: "break-all" }}>{joinUrl}</p>
-            </div>
-          )}
+          {/* Code room + QR */}
+          <div style={{ background: "#16213e", border: "1px solid #0f3460", borderRadius: 12, padding: 16, marginBottom: 12, textAlign: "center" }}>
+            <div style={{ fontSize: 11, color: "#95a5a6", textTransform: "uppercase", letterSpacing: 1, marginBottom: 6 }}>Code de la room</div>
+            <div style={{ fontSize: 42, fontWeight: "bold", color: "#e94560", letterSpacing: 8 }}>{codeRoom || "…"}</div>
+            <div style={{ fontSize: 11, color: "#555", marginTop: 4 }}>Les joueurs entrent ce code pour rejoindre</div>
 
-          <div style={{
-            display: "flex", justifyContent: "space-around",
-            background: "#16213e", border: "1px solid #0f3460",
-            padding: 15, borderRadius: 10, marginBottom: 12,
-          }}>
+            {showQR && (
+              <div style={{ marginTop: 16 }}>
+                <div style={{ background: "white", display: "inline-block", padding: 12, borderRadius: 8 }}>
+                  <QRCodeSVG value={siteUrl} size={140} />
+                </div>
+                <p style={{ color: "#95a5a6", fontSize: 11, marginTop: 8 }}>Scanner pour accéder au site</p>
+              </div>
+            )}
+
+            <button onClick={() => setShowQR(!showQR)} style={{ marginTop: 10, background: "#0f3460", color: "white", border: "1px solid #e94560", padding: "6px 14px", borderRadius: 6, cursor: "pointer", fontSize: 12 }}>
+              {showQR ? "Masquer QR" : "📱 Afficher QR"}
+            </button>
+          </div>
+
+          <div style={{ display: "flex", justifyContent: "space-around", background: "#16213e", border: "1px solid #0f3460", padding: 15, borderRadius: 10, marginBottom: 12 }}>
             {[
               { label: "Mon modificateur", value: bonus, set: setBonus },
               { label: "Mon seuil", value: seuil, set: setSeuil },
@@ -186,40 +210,24 @@ export default function MJ({ session }) {
               <div key={label} style={{ display: "flex", flexDirection: "column", gap: 6, alignItems: "center" }}>
                 <label style={{ fontSize: "0.75rem", textTransform: "uppercase", letterSpacing: 1, color: "#95a5a6" }}>{label}</label>
                 <input type="number" value={value} onChange={(e) => set(e.target.value)}
-                  style={{
-                    background: "#1a1a2e", border: "1px solid #e94560", color: "white",
-                    padding: 8, width: 70, borderRadius: 5, textAlign: "center", fontSize: "1rem", fontWeight: "bold",
-                  }}
+                  style={{ background: "#1a1a2e", border: "1px solid #e94560", color: "white", padding: 8, width: 70, borderRadius: 5, textAlign: "center", fontSize: "1rem", fontWeight: "bold" }}
                 />
               </div>
             ))}
           </div>
 
-          <div style={{
-            display: "flex", alignItems: "center", justifyContent: "center", gap: 10,
-            background: "#16213e", border: "1px solid #0f3460",
-            padding: "10px 15px", borderRadius: 10, marginBottom: 12,
-          }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 10, background: "#16213e", border: "1px solid #0f3460", padding: "10px 15px", borderRadius: 10, marginBottom: 12 }}>
             <span style={{ fontSize: "0.75rem", color: "#95a5a6", textTransform: "uppercase", letterSpacing: 1 }}>Critiques :</span>
             {["tous", "d20"].map((mode) => (
               <button key={mode} onClick={() => setModeCritique(mode)}
-                style={{
-                  padding: "5px 14px", borderRadius: 20, border: "none", cursor: "pointer",
-                  fontWeight: "bold", fontSize: 12,
-                  background: modeCritique === mode ? "#e94560" : "#1a1a2e",
-                  color: modeCritique === mode ? "white" : "#95a5a6",
-                }}
+                style={{ padding: "5px 14px", borderRadius: 20, border: "none", cursor: "pointer", fontWeight: "bold", fontSize: 12, background: modeCritique === mode ? "#e94560" : "#1a1a2e", color: modeCritique === mode ? "white" : "#95a5a6" }}
               >
                 {mode === "tous" ? "Tous les dés" : "D20 seulement"}
               </button>
             ))}
           </div>
 
-          <div style={{
-            background: "#16213e", border: "1px solid #0f3460", borderRadius: 12,
-            padding: "1.5rem", textAlign: "center", marginBottom: 12, minHeight: 120,
-            display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
-          }}>
+          <div style={{ background: "#16213e", border: "1px solid #0f3460", borderRadius: 12, padding: "1.5rem", textAlign: "center", marginBottom: 12, minHeight: 120, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center" }}>
             <div style={{ fontSize: 52, fontWeight: "bold", lineHeight: 1, color: resultColor, opacity: rolling ? 0.3 : 1, transition: "all 0.3s" }}>
               {rolling ? "…" : (lastRoll ? lastRoll.total : "?")}
             </div>
@@ -240,11 +248,7 @@ export default function MJ({ session }) {
           <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 8, marginBottom: 8 }}>
             {FACES.map((f) => (
               <button key={f} onClick={() => lancerDe(f)} disabled={rolling}
-                style={{
-                  background: activeDie === f ? "#e94560" : "#0f3460",
-                  color: "white", border: "1px solid #e94560",
-                  padding: "10px 4px", borderRadius: 6, cursor: "pointer", fontWeight: "bold", fontSize: 13,
-                }}
+                style={{ background: activeDie === f ? "#e94560" : "#0f3460", color: "white", border: "1px solid #e94560", padding: "10px 4px", borderRadius: 6, cursor: "pointer", fontWeight: "bold", fontSize: 13 }}
               >d{f}</button>
             ))}
           </div>
@@ -252,10 +256,7 @@ export default function MJ({ session }) {
           <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 8 }}>
             {FACES.map((f) => (
               <button key={f} onClick={() => lancerDe(f, true)} disabled={rolling}
-                style={{
-                  background: "#1a1a2e", color: "#f1c40f", border: "1px solid #f1c40f",
-                  padding: "8px 4px", borderRadius: 6, cursor: "pointer", fontWeight: "bold", fontSize: 11,
-                }}
+                style={{ background: "#1a1a2e", color: "#f1c40f", border: "1px solid #f1c40f", padding: "8px 4px", borderRadius: 6, cursor: "pointer", fontWeight: "bold", fontSize: 11 }}
               >🔒 d{f}</button>
             ))}
           </div>
@@ -293,9 +294,14 @@ export default function MJ({ session }) {
           </div>
 
           <div>
-            <h3 style={{ color: "#95a5a6", fontSize: "0.85rem", textTransform: "uppercase", letterSpacing: 1, marginTop: 0 }}>
-              Historique de la session
-            </h3>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+              <h3 style={{ color: "#95a5a6", fontSize: "0.85rem", textTransform: "uppercase", letterSpacing: 1, margin: 0 }}>
+                Historique de la session
+              </h3>
+              <button onClick={() => chargerHistorique(sessionId, modeCritique)}
+                style={{ background: "#0f3460", color: "#95a5a6", border: "1px solid #0f3460", padding: "4px 10px", borderRadius: 6, cursor: "pointer", fontSize: 12 }}
+              >🔄 Rafraîchir</button>
+            </div>
             <div style={{ background: "#16213e", border: "1px solid #0f3460", borderRadius: 10, maxHeight: 400, overflowY: "auto" }}>
               {history.length === 0 && <p style={{ color: "#95a5a6", textAlign: "center", padding: 20, fontSize: 14 }}>Les lancers apparaîtront ici…</p>}
               {history.map((r) => (

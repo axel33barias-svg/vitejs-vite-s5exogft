@@ -35,7 +35,7 @@ export default function App() {
   return (
     <BrowserRouter>
       <Routes>
-        <Route path="/rejoindre/:sessionId" element={<Joueur />} />
+        <Route path="/rejoindre" element={<Joueur />} />
         <Route path="/mj" element={session ? <MJ session={session} /> : <Navigate to="/login" />} />
         <Route path="/login" element={session ? <Navigate to="/mj" /> : <Login />} />
         <Route path="*" element={<Navigate to={session ? "/mj" : "/login"} />} />

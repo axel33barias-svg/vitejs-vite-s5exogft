@@ -1,5 +1,4 @@
 import { useState, useCallback, useEffect } from "react";
-import { useParams } from "react-router-dom";
 import { supabase } from "../supabase";
 
 const FACES = [4, 6, 8, 10, 12, 20, 100];
@@ -21,9 +20,13 @@ const colors = {
 };
 
 export default function Joueur() {
-  const { sessionId } = useParams();
+  const [etape, setEtape] = useState("accueil"); // accueil → jeu
+  const [code, setCode] = useState("");
   const [nom, setNom] = useState("");
-  const [nomConfirme, setNomConfirme] = useState(false);
+  const [erreur, setErreur] = useState(null);
+  const [loading, setLoading] = useState(false);
+
+  const [sessionId, setSessionId] = useState(null);
   const [joueurId, setJoueurId] = useState(null);
   const [bonus, setBonus] = useState(0);
   const [seuil, setSeuil] = useState(0);
@@ -32,33 +35,44 @@ export default function Joueur() {
   const [lastRoll, setLastRoll] = useState(null);
   const [history, setHistory] = useState([]);
   const [activeDie, setActiveDie] = useState(null);
-  const [sessionValide, setSessionValide] = useState(null);
 
-  useEffect(() => {
-    const checkSession = async () => {
-      const { data } = await supabase
-        .from("sessions").select("id").eq("id", sessionId).maybeSingle();
-      setSessionValide(!!data);
-    };
-    if (sessionId) checkSession();
-  }, [sessionId]);
+  const rejoindre = async () => {
+    if (!code.trim() || !nom.trim()) return;
+    setLoading(true);
+    setErreur(null);
 
-  useEffect(() => {
-    if (!nomConfirme || !sessionId) return;
-    const init = async () => {
-      const { data } = await supabase
-        .from("joueurs")
-        .insert([{ session_id: sessionId, nom, bonus: 0, seuil: 0 }])
-        .select().single();
-      if (data) {
-        setJoueurId(data.id);
-        setBonus(data.bonus);
-        setSeuil(data.seuil);
-      }
-    };
-    init();
-  }, [nomConfirme, sessionId, nom]);
+    // Cherche la session par code
+    const { data: session } = await supabase
+      .from("sessions")
+      .select("id")
+      .eq("code", code.toUpperCase().trim())
+      .maybeSingle();
 
+    if (!session) {
+      setErreur("Code invalide — vérifiez le code donné par votre MJ !");
+      setLoading(false);
+      return;
+    }
+
+    // Crée le joueur
+    const { data: joueur } = await supabase
+      .from("joueurs")
+      .insert([{ session_id: session.id, nom: nom.trim(), bonus: 0, seuil: 0 }])
+      .select()
+      .single();
+
+    if (joueur) {
+      setSessionId(session.id);
+      setJoueurId(joueur.id);
+      setBonus(joueur.bonus);
+      setSeuil(joueur.seuil);
+      setEtape("jeu");
+    }
+
+    setLoading(false);
+  };
+
+  // Écoute les modifs du MJ
   useEffect(() => {
     if (!joueurId) return;
     const channel = supabase
@@ -100,35 +114,54 @@ export default function Joueur() {
 
   const resultColor = lastRoll?.status ? colors[lastRoll.status.cls] : "#e0e0e0";
 
-  if (sessionValide === false) return (
-    <div style={{ minHeight: "100vh", background: "#1a1a2e", display: "flex", alignItems: "center", justifyContent: "center", flexDirection: "column", fontFamily: "sans-serif", color: "white", gap: 12 }}>
-      <div style={{ fontSize: 48 }}>⚠️</div>
-      <h2 style={{ color: "#e94560" }}>Session introuvable</h2>
-      <p style={{ color: "#95a5a6" }}>Ce lien n'est pas valide ou la session a expiré.</p>
-    </div>
-  );
-
-  if (!nomConfirme) return (
+  // Page d'accueil — saisie code + nom
+  if (etape === "accueil") return (
     <div style={{ minHeight: "100vh", background: "#1a1a2e", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "'Segoe UI', Tahoma, Geneva, Verdana, sans-serif" }}>
       <div style={{ maxWidth: 380, width: "90%", background: "#16213e", padding: 30, borderRadius: 15, border: "1px solid #0f3460", textAlign: "center", boxShadow: "0 10px 30px rgba(0,0,0,0.5)" }}>
-        <div style={{ fontSize: 48, marginBottom: 12 }}>🎲</div>
-        <h1 style={{ color: "#e94560", marginTop: 0, fontSize: "1.6rem" }}>Rejoindre la partie</h1>
-        <p style={{ color: "#95a5a6", fontSize: "0.9rem", marginBottom: 24 }}>Entrez le nom de votre personnage</p>
-        <input type="text" value={nom}
-          onChange={(e) => setNom(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && nom.trim() && setNomConfirme(true)}
-          placeholder="Ex: Aragorn, Gandalf..."
-          style={{ width: "100%", background: "#1a1a2e", border: "1px solid #e94560", color: "white", padding: "12px", borderRadius: 8, fontSize: "1rem", boxSizing: "border-box", outline: "none", marginBottom: 14, textAlign: "center" }}
-        />
-        <button onClick={() => nom.trim() && setNomConfirme(true)} disabled={!nom.trim()}
-          style={{ width: "100%", background: nom.trim() ? "#e94560" : "#0f3460", color: "white", border: "none", padding: "12px 0", borderRadius: 8, fontWeight: "bold", fontSize: 16, cursor: nom.trim() ? "pointer" : "not-allowed" }}
+        <div style={{ fontSize: 48, marginBottom: 8 }}>🎲</div>
+        <h1 style={{ color: "#e94560", marginTop: 0, fontSize: "1.6rem" }}>Rejoindre une partie</h1>
+        <p style={{ color: "#95a5a6", fontSize: "0.9rem", marginBottom: 24 }}>Entrez le code donné par votre MJ</p>
+
+        {erreur && (
+          <div style={{ background: "#3a1a1a", border: "1px solid #e94560", color: "#e94560", padding: "10px 12px", borderRadius: 6, fontSize: "0.85rem", marginBottom: 14 }}>
+            ⚠️ {erreur}
+          </div>
+        )}
+
+        <div style={{ marginBottom: 12, textAlign: "left" }}>
+          <label style={{ display: "block", fontSize: 11, color: "#95a5a6", textTransform: "uppercase", letterSpacing: 1, marginBottom: 6 }}>Code de la room</label>
+          <input
+            type="text" value={code}
+            onChange={(e) => setCode(e.target.value.toUpperCase())}
+            placeholder="Ex: FEUX"
+            maxLength={4}
+            style={{ width: "100%", background: "#1a1a2e", border: "1px solid #e94560", color: "white", padding: "12px", borderRadius: 8, fontSize: "1.5rem", fontWeight: "bold", boxSizing: "border-box", outline: "none", textAlign: "center", letterSpacing: 8 }}
+          />
+        </div>
+
+        <div style={{ marginBottom: 20, textAlign: "left" }}>
+          <label style={{ display: "block", fontSize: 11, color: "#95a5a6", textTransform: "uppercase", letterSpacing: 1, marginBottom: 6 }}>Nom du personnage</label>
+          <input
+            type="text" value={nom}
+            onChange={(e) => setNom(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && rejoindre()}
+            placeholder="Ex: Aragorn, Gandalf..."
+            style={{ width: "100%", background: "#1a1a2e", border: "1px solid #0f3460", color: "white", padding: "12px", borderRadius: 8, fontSize: "1rem", boxSizing: "border-box", outline: "none" }}
+          />
+        </div>
+
+        <button
+          onClick={rejoindre}
+          disabled={!code.trim() || !nom.trim() || loading}
+          style={{ width: "100%", background: code.trim() && nom.trim() ? "#e94560" : "#0f3460", color: "white", border: "none", padding: "12px 0", borderRadius: 8, fontWeight: "bold", fontSize: 16, cursor: code.trim() && nom.trim() ? "pointer" : "not-allowed" }}
         >
-          Entrer dans la partie ⚔️
+          {loading ? "Connexion…" : "Entrer dans la partie ⚔️"}
         </button>
       </div>
     </div>
   );
 
+  // Espace jeu
   return (
     <div style={{ minHeight: "100vh", background: "#1a1a2e", fontFamily: "'Segoe UI', Tahoma, Geneva, Verdana, sans-serif", color: "white" }}>
       <div style={{ background: "#16213e", borderBottom: "1px solid #0f3460", padding: "12px 24px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
