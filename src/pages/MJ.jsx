@@ -82,8 +82,6 @@ export default function MJ({ session }) {
       .order("created_at", { ascending: false })
       .limit(30);
     
-    console.log("historique data:", data, "error:", error);
-    
     if (data) {
       const withStatus = data.map((r) => ({
         ...r,
