@@ -20,7 +20,7 @@ const colors = {
 };
 
 export default function Joueur() {
-  const [etape, setEtape] = useState("accueil"); // accueil → jeu
+  const [etape, setEtape] = useState("accueil");
   const [code, setCode] = useState("");
   const [nom, setNom] = useState("");
   const [erreur, setErreur] = useState(null);
@@ -36,12 +36,14 @@ export default function Joueur() {
   const [history, setHistory] = useState([]);
   const [activeDie, setActiveDie] = useState(null);
 
+  // 🎲 Popup MJ
+  const [popupMJ, setPopupMJ] = useState(null);
+
   const rejoindre = async () => {
     if (!code.trim() || !nom.trim()) return;
     setLoading(true);
     setErreur(null);
 
-    // Cherche la session par code
     const { data: session } = await supabase
       .from("sessions")
       .select("id")
@@ -54,7 +56,6 @@ export default function Joueur() {
       return;
     }
 
-    // Crée le joueur
     const { data: joueur } = await supabase
       .from("joueurs")
       .insert([{ session_id: session.id, nom: nom.trim(), bonus: 0, seuil: 0 }])
@@ -72,7 +73,7 @@ export default function Joueur() {
     setLoading(false);
   };
 
-  // Écoute les modifs du MJ
+  // Écoute les modifs du MJ sur ce joueur
   useEffect(() => {
     if (!joueurId) return;
     const channel = supabase
@@ -87,6 +88,32 @@ export default function Joueur() {
       ).subscribe();
     return () => supabase.removeChannel(channel);
   }, [joueurId]);
+
+  // 🎲 Écoute les lancers visibles du MJ
+  useEffect(() => {
+    if (!sessionId) return;
+    const channel = supabase
+      .channel(`lancers-joueur-${sessionId}`)
+      .on("postgres_changes",
+        { event: "INSERT", schema: "public", table: "lancers", filter: `session_id=eq.${sessionId}` },
+        (payload) => {
+          const data = payload.new;
+          // Seulement les lancers du MJ (pas les nôtres)
+          if (!data || data.auteur !== "MJ") return;
+
+          const status = getStatus(data.valeur, data.bonus, data.total, data.faces, data.seuil, modeCritique);
+          const roll = { ...data, status };
+
+          // Ajoute à l'historique
+          setHistory((prev) => [roll, ...prev].slice(0, 20));
+
+          // Affiche le popup 5 secondes
+          setPopupMJ(roll);
+          setTimeout(() => setPopupMJ(null), 5000);
+        }
+      ).subscribe();
+    return () => supabase.removeChannel(channel);
+  }, [sessionId, modeCritique]);
 
   const lancerDe = useCallback(async (faces) => {
     if (rolling || !joueurId) return;
@@ -107,14 +134,14 @@ export default function Joueur() {
       setActiveDie(null);
 
       await supabase.from("lancers").insert([{
-        valeur, bonus: b, total, faces, seuil: s, session_id: sessionId, auteur: nom
+        valeur, bonus: b, total, faces, seuil: s,
+        session_id: sessionId, auteur: nom, auteur_type: "joueur"
       }]);
     }, 400);
   }, [rolling, bonus, seuil, modeCritique, nom, joueurId, sessionId]);
 
   const resultColor = lastRoll?.status ? colors[lastRoll.status.cls] : "#e0e0e0";
 
-  // Page d'accueil — saisie code + nom
   if (etape === "accueil") return (
     <div style={{ minHeight: "100vh", background: "#1a1a2e", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "'Segoe UI', Tahoma, Geneva, Verdana, sans-serif" }}>
       <div style={{ maxWidth: 380, width: "90%", background: "#16213e", padding: 30, borderRadius: 15, border: "1px solid #0f3460", textAlign: "center", boxShadow: "0 10px 30px rgba(0,0,0,0.5)" }}>
@@ -130,8 +157,7 @@ export default function Joueur() {
 
         <div style={{ marginBottom: 12, textAlign: "left" }}>
           <label style={{ display: "block", fontSize: 11, color: "#95a5a6", textTransform: "uppercase", letterSpacing: 1, marginBottom: 6 }}>Code de la room</label>
-          <input
-            type="text" value={code}
+          <input type="text" value={code}
             onChange={(e) => setCode(e.target.value.toUpperCase())}
             placeholder="Ex: FEUX"
             maxLength={4}
@@ -141,8 +167,7 @@ export default function Joueur() {
 
         <div style={{ marginBottom: 20, textAlign: "left" }}>
           <label style={{ display: "block", fontSize: 11, color: "#95a5a6", textTransform: "uppercase", letterSpacing: 1, marginBottom: 6 }}>Nom du personnage</label>
-          <input
-            type="text" value={nom}
+          <input type="text" value={nom}
             onChange={(e) => setNom(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && rejoindre()}
             placeholder="Ex: Aragorn, Gandalf..."
@@ -150,9 +175,7 @@ export default function Joueur() {
           />
         </div>
 
-        <button
-          onClick={rejoindre}
-          disabled={!code.trim() || !nom.trim() || loading}
+        <button onClick={rejoindre} disabled={!code.trim() || !nom.trim() || loading}
           style={{ width: "100%", background: code.trim() && nom.trim() ? "#e94560" : "#0f3460", color: "white", border: "none", padding: "12px 0", borderRadius: 8, fontWeight: "bold", fontSize: 16, cursor: code.trim() && nom.trim() ? "pointer" : "not-allowed" }}
         >
           {loading ? "Connexion…" : "Entrer dans la partie ⚔️"}
@@ -161,9 +184,49 @@ export default function Joueur() {
     </div>
   );
 
-  // Espace jeu
   return (
     <div style={{ minHeight: "100vh", background: "#1a1a2e", fontFamily: "'Segoe UI', Tahoma, Geneva, Verdana, sans-serif", color: "white" }}>
+
+      {/* 🎲 POPUP MJ */}
+      {popupMJ && (
+        <div style={{
+          position: "fixed", top: 20, left: "50%", transform: "translateX(-50%)",
+          background: "#16213e", border: "2px solid #e94560", borderRadius: 16,
+          padding: "20px 32px", textAlign: "center", zIndex: 1000,
+          boxShadow: "0 8px 32px rgba(233,69,96,0.4)",
+          animation: "slideDown 0.3s ease",
+          minWidth: 250,
+        }}>
+          <div style={{ fontSize: 12, color: "#95a5a6", textTransform: "uppercase", letterSpacing: 1, marginBottom: 4 }}>
+            ⚔️ Le MJ lance…
+          </div>
+          <div style={{
+            fontSize: 64, fontWeight: "bold",
+            color: popupMJ.status ? colors[popupMJ.status.cls] : "#e0e0e0",
+            lineHeight: 1,
+          }}>
+            {popupMJ.total}
+          </div>
+          <div style={{ fontSize: 13, color: "#95a5a6", marginTop: 4 }}>
+            d{popupMJ.faces} · {popupMJ.valeur}
+            {popupMJ.bonus !== 0 ? ` ${popupMJ.bonus >= 0 ? "+" : ""}${popupMJ.bonus}` : ""}
+            {" = "}{popupMJ.total}
+          </div>
+          {popupMJ.status && (
+            <div style={{ marginTop: 8, fontWeight: "bold", color: colors[popupMJ.status.cls], fontSize: 15 }}>
+              {popupMJ.status.label}
+            </div>
+          )}
+        </div>
+      )}
+
+      <style>{`
+        @keyframes slideDown {
+          from { opacity: 0; transform: translateX(-50%) translateY(-20px); }
+          to { opacity: 1; transform: translateX(-50%) translateY(0); }
+        }
+      `}</style>
+
       <div style={{ background: "#16213e", borderBottom: "1px solid #0f3460", padding: "12px 24px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
         <h1 style={{ margin: 0, color: "#e94560", fontSize: "1.2rem" }}>🎲 Espace Joueur</h1>
         <span style={{ background: "#0f3460", color: "#e0e0e0", padding: "5px 14px", borderRadius: 20, fontSize: 13, fontWeight: "bold" }}>⚔️ {nom}</span>
@@ -207,11 +270,13 @@ export default function Joueur() {
 
         {history.length > 0 && (
           <div>
-            <h3 style={{ fontSize: "0.9rem", color: "#95a5a6", textTransform: "uppercase", letterSpacing: 1, marginTop: 0 }}>Mes lancers</h3>
+            <h3 style={{ fontSize: "0.9rem", color: "#95a5a6", textTransform: "uppercase", letterSpacing: 1, marginTop: 0 }}>Historique</h3>
             <div style={{ background: "#16213e", border: "1px solid #0f3460", borderRadius: 10, maxHeight: 200, overflowY: "auto" }}>
               {history.map((r) => (
                 <div key={r.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 14px", borderBottom: "1px solid #0f3460" }}>
-                  <span style={{ color: "#95a5a6", fontSize: 12 }}>d{r.faces}</span>
+                  <span style={{ color: "#95a5a6", fontSize: 12 }}>
+                    {r.auteur === "MJ" ? "⚔️ MJ" : "🎲 Moi"} · d{r.faces}
+                  </span>
                   <span style={{ fontWeight: "bold", fontSize: 16 }}>{r.total}</span>
                   {r.status && <span style={{ color: colors[r.status.cls], fontSize: 11 }}>{r.status.label}</span>}
                 </div>
