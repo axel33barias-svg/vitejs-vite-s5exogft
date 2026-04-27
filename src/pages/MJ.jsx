@@ -40,7 +40,7 @@ export default function MJ({ session }) {
 
   useEffect(() => {
     const initSession = async () => {
-      const { data } = await supabase
+      const { data, error } = await supabase
         .from("sessions")
         .select("id, code")
         .eq("mj_id", session.user.id)
@@ -75,12 +75,15 @@ export default function MJ({ session }) {
 
   const chargerHistorique = useCallback(async (sid, mode) => {
     if (!sid) return;
-    const { data } = await supabase
+    const { data, error } = await supabase
       .from("lancers")
       .select("*")
       .eq("session_id", sid)
       .order("created_at", { ascending: false })
       .limit(30);
+    
+    console.log("historique data:", data, "error:", error);
+    
     if (data) {
       const withStatus = data.map((r) => ({
         ...r,
@@ -89,7 +92,6 @@ export default function MJ({ session }) {
       setHistory(withStatus);
     }
   }, []);
-
   // Charge joueurs + historique quand session prête
   useEffect(() => {
     if (!sessionId) return;
