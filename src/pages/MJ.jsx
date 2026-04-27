@@ -4,7 +4,6 @@ import { supabase } from "../supabase";
 
 const FACES = [4, 6, 8, 10, 12, 20, 100];
 
-// Génère un code de 4 lettres aléatoires
 function genererCode() {
   const lettres = "ABCDEFGHJKLMNPQRSTUVWXYZ";
   return Array.from({ length: 4 }, () => lettres[Math.floor(Math.random() * lettres.length)]).join("");
@@ -41,7 +40,6 @@ export default function MJ({ session }) {
 
   useEffect(() => {
     const initSession = async () => {
-      // Cherche session existante
       const { data } = await supabase
         .from("sessions")
         .select("id, code")
@@ -54,7 +52,6 @@ export default function MJ({ session }) {
         setSessionId(data.id);
         setCodeRoom(data.code);
       } else {
-        // Crée une nouvelle session avec un code unique
         let code = genererCode();
         let ok = false;
         while (!ok) {
@@ -68,7 +65,7 @@ export default function MJ({ session }) {
             setCodeRoom(newSession.code);
             ok = true;
           } else {
-            code = genererCode(); // Réessaie si code déjà pris
+            code = genererCode();
           }
         }
       }
@@ -93,6 +90,7 @@ export default function MJ({ session }) {
     }
   }, []);
 
+  // Charge joueurs + historique quand session prête
   useEffect(() => {
     if (!sessionId) return;
 
@@ -108,26 +106,17 @@ export default function MJ({ session }) {
         (payload) => { setJoueurs((prev) => [...prev, payload.new]); }
       ).subscribe();
 
-    const channelLancers = supabase
-      .channel("lancers-mj")
-      .on("postgres_changes",
-        { event: "INSERT", schema: "public", table: "lancers", filter: `session_id=eq.${sessionId}` },
-        (payload) => {
-          const data = payload.new;
-          if (data && data.valeur) {
-            const status = getStatus(data.valeur, data.bonus, data.total, data.faces, data.seuil, modeCritique);
-            setHistory((prev) => [{ ...data, status }, ...prev].slice(0, 30));
-          } else {
-            chargerHistorique(sessionId, modeCritique);
-          }
-        }
-      ).subscribe();
-
-    return () => {
-      supabase.removeChannel(channelJoueurs);
-      supabase.removeChannel(channelLancers);
-    };
+    return () => supabase.removeChannel(channelJoueurs);
   }, [sessionId]);
+
+  // ✅ Rafraîchissement automatique toutes les 3 secondes
+  useEffect(() => {
+    if (!sessionId) return;
+    const interval = setInterval(() => {
+      chargerHistorique(sessionId, modeCritique);
+    }, 3000);
+    return () => clearInterval(interval);
+  }, [sessionId, modeCritique, chargerHistorique]);
 
   const updateJoueur = async (joueurId, field, value) => {
     const parsed = parseInt(value) || 0;
@@ -187,7 +176,6 @@ export default function MJ({ session }) {
             <div style={{ fontSize: 11, color: "#95a5a6", textTransform: "uppercase", letterSpacing: 1, marginBottom: 6 }}>Code de la room</div>
             <div style={{ fontSize: 42, fontWeight: "bold", color: "#e94560", letterSpacing: 8 }}>{codeRoom || "…"}</div>
             <div style={{ fontSize: 11, color: "#555", marginTop: 4 }}>Les joueurs entrent ce code pour rejoindre</div>
-
             {showQR && (
               <div style={{ marginTop: 16 }}>
                 <div style={{ background: "white", display: "inline-block", padding: 12, borderRadius: 8 }}>
@@ -196,7 +184,6 @@ export default function MJ({ session }) {
                 <p style={{ color: "#95a5a6", fontSize: 11, marginTop: 8 }}>Scanner pour accéder au site</p>
               </div>
             )}
-
             <button onClick={() => setShowQR(!showQR)} style={{ marginTop: 10, background: "#0f3460", color: "white", border: "1px solid #e94560", padding: "6px 14px", borderRadius: 6, cursor: "pointer", fontSize: 12 }}>
               {showQR ? "Masquer QR" : "📱 Afficher QR"}
             </button>
@@ -298,9 +285,7 @@ export default function MJ({ session }) {
               <h3 style={{ color: "#95a5a6", fontSize: "0.85rem", textTransform: "uppercase", letterSpacing: 1, margin: 0 }}>
                 Historique de la session
               </h3>
-              <button onClick={() => chargerHistorique(sessionId, modeCritique)}
-                style={{ background: "#0f3460", color: "#95a5a6", border: "1px solid #0f3460", padding: "4px 10px", borderRadius: 6, cursor: "pointer", fontSize: 12 }}
-              >🔄 Rafraîchir</button>
+              <span style={{ color: "#555", fontSize: 11 }}>↻ auto 3s</span>
             </div>
             <div style={{ background: "#16213e", border: "1px solid #0f3460", borderRadius: 10, maxHeight: 400, overflowY: "auto" }}>
               {history.length === 0 && <p style={{ color: "#95a5a6", textAlign: "center", padding: 20, fontSize: 14 }}>Les lancers apparaîtront ici…</p>}
