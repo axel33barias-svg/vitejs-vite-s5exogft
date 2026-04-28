@@ -194,6 +194,9 @@ export default function MJ({ session }) {
                   <QRCodeSVG value={siteUrl} size={140} />
                 </div>
                 <p style={{ color: "#95a5a6", fontSize: 11, marginTop: 8 }}>Scanner pour accéder au site</p>
+                <a href={siteUrl} target="_blank" rel="noreferrer" style={{ color: "#e94560", fontSize: 12, wordBreak: "break-all" }}>
+                {siteUrl}
+                </a> 
               </div>
             )}
 

@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect } from "react";
+import { useState, useCallback, useEffect, useRef } from "react";
 import { supabase } from "../supabase";
 
 const FACES = [4, 6, 8, 10, 12, 20, 100];
@@ -35,9 +35,10 @@ export default function Joueur() {
   const [lastRoll, setLastRoll] = useState(null);
   const [history, setHistory] = useState([]);
   const [activeDie, setActiveDie] = useState(null);
-
-  // 🔔 Popup MJ
   const [popupMJ, setPopupMJ] = useState(null);
+
+  const lastLancerIdRef = useRef(null);
+  const connexionTimeRef = useRef(null); // ← nouveau
 
   const rejoindre = async () => {
     if (!code.trim() || !nom.trim()) return;
@@ -67,13 +68,14 @@ export default function Joueur() {
       setJoueurId(joueur.id);
       setBonus(joueur.bonus);
       setSeuil(joueur.seuil);
+      connexionTimeRef.current = new Date().toISOString(); // ← nouveau
       setEtape("jeu");
     }
 
     setLoading(false);
   };
 
-  // Écoute les modifs du MJ
+  // Écoute les modifs du MJ sur le joueur
   useEffect(() => {
     if (!joueurId) return;
     const channel = supabase
@@ -89,54 +91,54 @@ export default function Joueur() {
     return () => supabase.removeChannel(channel);
   }, [joueurId]);
 
-  // 🔔 Écoute les lancers visibles du MJ en temps réel
+  // Charge l'historique complet
+  const chargerHistorique = useCallback(async (sid, mode) => {
+    if (!sid) return;
+    const { data } = await supabase
+      .from("lancers")
+      .select("*")
+      .eq("session_id", sid)
+      .order("created_at", { ascending: false })
+      .limit(30);
+    if (data) {
+      const withStatus = data.map((r) => ({
+        ...r,
+        status: getStatus(r.valeur, r.bonus, r.total, r.faces, r.seuil, mode)
+      }));
+      setHistory(withStatus);
+    }
+  }, []);
+
+  // Polling toutes les 500ms
   useEffect(() => {
     if (!sessionId) return;
-    const channel = supabase
-      .channel(`lancers-mj-joueur-${sessionId}`)
-      .on("postgres_changes",
-        { event: "INSERT", schema: "public", table: "lancers", filter: `session_id=eq.${sessionId}` },
-        (payload) => {
-          const data = payload.new;
-          // Seulement les lancers du MJ (pas les lancers joueurs)
-          if (data && data.auteur === "MJ" && data.valeur) {
-            const status = getStatus(data.valeur, data.bonus, data.total, data.faces, data.seuil, modeCritique);
-            const roll = { ...data, status };
 
-            // Ajoute à l'historique
-            setHistory((prev) => [roll, ...prev].slice(0, 30));
+    chargerHistorique(sessionId, modeCritique);
 
-            // Affiche le popup 5 secondes
-            setPopupMJ(roll);
-            setTimeout(() => setPopupMJ(null), 5000);
-          }
-        }
-      ).subscribe();
-    return () => supabase.removeChannel(channel);
-  }, [sessionId, modeCritique]);
-
-  // Rafraîchissement historique toutes les 5 secondes
-  useEffect(() => {
-    if (!sessionId) return;
-    const charger = async () => {
+    const interval = setInterval(async () => {
       const { data } = await supabase
         .from("lancers")
         .select("*")
         .eq("session_id", sessionId)
+        .eq("auteur", "MJ")
+        .gt("created_at", connexionTimeRef.current) // ← modifié
         .order("created_at", { ascending: false })
-        .limit(30);
-      if (data) {
-        const withStatus = data.map((r) => ({
-          ...r,
-          status: getStatus(r.valeur, r.bonus, r.total, r.faces, r.seuil, modeCritique)
-        }));
-        setHistory(withStatus);
+        .limit(1);
+
+      if (data && data.length > 0) {
+        const dernier = data[0];
+        if (dernier.id !== lastLancerIdRef.current) {
+          lastLancerIdRef.current = dernier.id;
+          const status = getStatus(dernier.valeur, dernier.bonus, dernier.total, dernier.faces, dernier.seuil, modeCritique);
+          setPopupMJ({ ...dernier, status });
+          setTimeout(() => setPopupMJ(null), 5000);
+          chargerHistorique(sessionId, modeCritique);
+        }
       }
-    };
-    charger();
-    const interval = setInterval(charger, 5000);
+    }, 500);
+
     return () => clearInterval(interval);
-  }, [sessionId]);
+  }, [sessionId, modeCritique, chargerHistorique]);
 
   const lancerDe = useCallback(async (faces) => {
     if (rolling || !joueurId) return;
@@ -163,7 +165,7 @@ export default function Joueur() {
   }, [rolling, bonus, seuil, modeCritique, nom, joueurId, sessionId]);
 
   const resultColor = lastRoll?.status ? colors[lastRoll.status.cls] : "#e0e0e0";
-  const popupColor = popupMJ?.status ? colors[popupMJ.status.cls] : "#e0e0e0";
+  const popupColor = popupMJ?.status ? colors[popupMJ.status.cls] : "#e94560";
 
   if (etape === "accueil") return (
     <div style={{ minHeight: "100vh", background: "#1a1a2e", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "'Segoe UI', Tahoma, Geneva, Verdana, sans-serif" }}>
@@ -215,15 +217,14 @@ export default function Joueur() {
         <div style={{
           position: "fixed", top: 20, left: "50%", transform: "translateX(-50%)",
           background: "#16213e", border: `2px solid ${popupColor}`,
-          borderRadius: 12, padding: "16px 24px", textAlign: "center",
-          boxShadow: `0 0 30px ${popupColor}44`, zIndex: 1000,
-          animation: "fadeIn 0.3s ease",
-          minWidth: 220,
+          borderRadius: 12, padding: "16px 28px", textAlign: "center",
+          boxShadow: `0 0 30px ${popupColor}66`, zIndex: 1000,
+          minWidth: 220, animation: "fadeIn 0.3s ease",
         }}>
           <div style={{ fontSize: 11, color: "#95a5a6", textTransform: "uppercase", letterSpacing: 1, marginBottom: 6 }}>
             ⚔️ Le MJ lance un dé !
           </div>
-          <div style={{ fontSize: 48, fontWeight: "bold", color: popupColor, lineHeight: 1 }}>
+          <div style={{ fontSize: 52, fontWeight: "bold", color: popupColor, lineHeight: 1 }}>
             {popupMJ.total}
           </div>
           <div style={{ fontSize: 12, color: "#95a5a6", marginTop: 4 }}>
@@ -242,7 +243,7 @@ export default function Joueur() {
       <style>{`
         @keyframes fadeIn {
           from { opacity: 0; transform: translateX(-50%) translateY(-10px); }
-          to { opacity: 1; transform: translateX(-50%) translateY(0); }
+          to   { opacity: 1; transform: translateX(-50%) translateY(0); }
         }
       `}</style>
 
