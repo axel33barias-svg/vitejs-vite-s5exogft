@@ -66,6 +66,12 @@ export default function MJ({ session }) {
       await supabase.from("joueurs").delete().eq("session_id", sessionId || "");
       await supabase.from("sessions").delete().eq("mj_id", session.user.id);
 
+      const supprimerJoueur = async (joueurId) => {
+        setJoueurs((prev) => prev.filter((j) => j.id !== joueurId));
+        await supabase.from("lancers").delete().eq("session_id", sessionId).eq("auteur", joueurs.find(j => j.id === joueurId)?.nom);
+        await supabase.from("joueurs").delete().eq("id", joueurId);
+      };
+
       const { data: newSession, error } = await supabase
         .from("sessions")
         .insert([{ mj_id: session.user.id, code }])
@@ -299,6 +305,11 @@ export default function MJ({ session }) {
                 {joueurs.map((j) => (
                   <div key={j.id} style={{ background: "#16213e", border: "1px solid #0f3460", borderRadius: 10, padding: "12px 14px", display: "flex", alignItems: "center", gap: 12 }}>
                     <span style={{ fontWeight: "bold", flex: 1 }}>⚔️ {j.nom}</span>
+                    <button onClick={() => supprimerJoueur(j.id)} style={{
+                    background: "transparent", color: "#e94560",
+                    border: "1px solid #e94560", padding: "4px 8px",
+                    borderRadius: 4, cursor: "pointer", fontSize: 11,
+                    }}>✕</button>
                     <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                       <label style={{ fontSize: 11, color: "#95a5a6" }}>Bonus</label>
                       <input type="number" value={j.bonus} onChange={(e) => updateJoueur(j.id, "bonus", e.target.value)}
