@@ -61,16 +61,9 @@ export default function MJ({ session }) {
     let code = genererCode();
     let ok = false;
     while (!ok) {
-      // Supprime l'ancienne session si elle existe
       await supabase.from("lancers").delete().eq("session_id", sessionId || "");
       await supabase.from("joueurs").delete().eq("session_id", sessionId || "");
       await supabase.from("sessions").delete().eq("mj_id", session.user.id);
-
-      const supprimerJoueur = async (joueurId) => {
-        setJoueurs((prev) => prev.filter((j) => j.id !== joueurId));
-        await supabase.from("lancers").delete().eq("session_id", sessionId).eq("auteur", joueurs.find(j => j.id === joueurId)?.nom);
-        await supabase.from("joueurs").delete().eq("id", joueurId);
-      };
 
       const { data: newSession, error } = await supabase
         .from("sessions")
@@ -90,6 +83,16 @@ export default function MJ({ session }) {
       }
     }
     setConfirmReset(false);
+  };
+
+  // ✅ supprimerJoueur au bon endroit — accessible depuis le JSX
+  const supprimerJoueur = async (joueurId) => {
+    const joueur = joueurs.find(j => j.id === joueurId);
+    setJoueurs((prev) => prev.filter((j) => j.id !== joueurId));
+    if (joueur) {
+      await supabase.from("lancers").delete().eq("session_id", sessionId).eq("auteur", joueur.nom);
+    }
+    await supabase.from("joueurs").delete().eq("id", joueurId);
   };
 
   const chargerHistorique = useCallback(async (sid, mode) => {
@@ -127,11 +130,12 @@ export default function MJ({ session }) {
     return () => supabase.removeChannel(channelJoueurs);
   }, [sessionId]);
 
+  // ✅ Polling à 500ms
   useEffect(() => {
     if (!sessionId) return;
     const interval = setInterval(() => {
       chargerHistorique(sessionId, modeCritique);
-    }, 3000);
+    }, 500);
     return () => clearInterval(interval);
   }, [sessionId, modeCritique, chargerHistorique]);
 
@@ -188,7 +192,6 @@ export default function MJ({ session }) {
 
       <div style={{ maxWidth: 1000, margin: "0 auto", padding: "24px 16px", display: "grid", gridTemplateColumns: "1fr 1fr", gap: 20 }}>
         <div>
-          {/* Code room + QR */}
           <div style={{ background: "#16213e", border: "1px solid #0f3460", borderRadius: 12, padding: 16, marginBottom: 12, textAlign: "center" }}>
             <div style={{ fontSize: 11, color: "#95a5a6", textTransform: "uppercase", letterSpacing: 1, marginBottom: 6 }}>Code de la room</div>
             <div style={{ fontSize: 42, fontWeight: "bold", color: "#e94560", letterSpacing: 8 }}>{codeRoom || "…"}</div>
@@ -201,8 +204,8 @@ export default function MJ({ session }) {
                 </div>
                 <p style={{ color: "#95a5a6", fontSize: 11, marginTop: 8 }}>Scanner pour accéder au site</p>
                 <a href={siteUrl} target="_blank" rel="noreferrer" style={{ color: "#e94560", fontSize: 12, wordBreak: "break-all" }}>
-                {siteUrl}
-                </a> 
+                  {siteUrl}
+                </a>
               </div>
             )}
 
@@ -210,8 +213,6 @@ export default function MJ({ session }) {
               <button onClick={() => setShowQR(!showQR)} style={{ background: "#0f3460", color: "white", border: "1px solid #e94560", padding: "6px 14px", borderRadius: 6, cursor: "pointer", fontSize: 12 }}>
                 {showQR ? "Masquer QR" : "📱 Afficher QR"}
               </button>
-
-              {/* Bouton nouvelle session */}
               {!confirmReset ? (
                 <button onClick={() => setConfirmReset(true)} style={{ background: "transparent", color: "#95a5a6", border: "1px solid #555", padding: "6px 14px", borderRadius: 6, cursor: "pointer", fontSize: 12 }}>
                   🔄 Nouvelle session
@@ -219,12 +220,8 @@ export default function MJ({ session }) {
               ) : (
                 <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
                   <span style={{ fontSize: 11, color: "#e94560" }}>Confirmer ?</span>
-                  <button onClick={creerNouvelleSession} style={{ background: "#e94560", color: "white", border: "none", padding: "6px 10px", borderRadius: 6, cursor: "pointer", fontSize: 12, fontWeight: "bold" }}>
-                    Oui
-                  </button>
-                  <button onClick={() => setConfirmReset(false)} style={{ background: "#0f3460", color: "white", border: "none", padding: "6px 10px", borderRadius: 6, cursor: "pointer", fontSize: 12 }}>
-                    Non
-                  </button>
+                  <button onClick={creerNouvelleSession} style={{ background: "#e94560", color: "white", border: "none", padding: "6px 10px", borderRadius: 6, cursor: "pointer", fontSize: 12, fontWeight: "bold" }}>Oui</button>
+                  <button onClick={() => setConfirmReset(false)} style={{ background: "#0f3460", color: "white", border: "none", padding: "6px 10px", borderRadius: 6, cursor: "pointer", fontSize: 12 }}>Non</button>
                 </div>
               )}
             </div>
@@ -305,11 +302,7 @@ export default function MJ({ session }) {
                 {joueurs.map((j) => (
                   <div key={j.id} style={{ background: "#16213e", border: "1px solid #0f3460", borderRadius: 10, padding: "12px 14px", display: "flex", alignItems: "center", gap: 12 }}>
                     <span style={{ fontWeight: "bold", flex: 1 }}>⚔️ {j.nom}</span>
-                    <button onClick={() => supprimerJoueur(j.id)} style={{
-                    background: "transparent", color: "#e94560",
-                    border: "1px solid #e94560", padding: "4px 8px",
-                    borderRadius: 4, cursor: "pointer", fontSize: 11,
-                    }}>✕</button>
+                    <button onClick={() => supprimerJoueur(j.id)} style={{ background: "transparent", color: "#e94560", border: "1px solid #e94560", padding: "4px 8px", borderRadius: 4, cursor: "pointer", fontSize: 11 }}>✕</button>
                     <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                       <label style={{ fontSize: 11, color: "#95a5a6" }}>Bonus</label>
                       <input type="number" value={j.bonus} onChange={(e) => updateJoueur(j.id, "bonus", e.target.value)}
@@ -331,7 +324,7 @@ export default function MJ({ session }) {
               <h3 style={{ color: "#95a5a6", fontSize: "0.85rem", textTransform: "uppercase", letterSpacing: 1, margin: 0 }}>
                 Historique de la session
               </h3>
-              <span style={{ color: "#555", fontSize: 11 }}>↻ auto 3s</span>
+              <span style={{ color: "#555", fontSize: 11 }}>↻ auto 500ms</span>
             </div>
             <div style={{ background: "#16213e", border: "1px solid #0f3460", borderRadius: 10, maxHeight: 400, overflowY: "auto" }}>
               {history.length === 0 && <p style={{ color: "#95a5a6", textAlign: "center", padding: 20, fontSize: 14 }}>Les lancers apparaîtront ici…</p>}
