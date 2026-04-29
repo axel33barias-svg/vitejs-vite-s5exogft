@@ -37,14 +37,8 @@ export default function Joueur() {
   const [activeDie, setActiveDie] = useState(null);
   const [popupMJ, setPopupMJ] = useState(null);
 
-  const connexionTimeRef = useRef(null);
   const lastLancerIdRef = useRef(null);
-  const modeCritiqueRef = useRef(modeCritique); // ← ref pour éviter la closure figée
-
-  // Synchronise la ref à chaque changement de modeCritique
-  useEffect(() => {
-    modeCritiqueRef.current = modeCritique;
-  }, [modeCritique]);
+  const connexionTimeRef = useRef(null); // ✅ AJOUT
 
   const rejoindre = async () => {
     if (!code.trim() || !nom.trim()) return;
@@ -74,7 +68,7 @@ export default function Joueur() {
       setJoueurId(joueur.id);
       setBonus(joueur.bonus);
       setSeuil(joueur.seuil);
-      connexionTimeRef.current = new Date().toISOString();
+      connexionTimeRef.current = new Date().toISOString(); // ✅ AJOUT
       setEtape("jeu");
     }
 
@@ -97,67 +91,56 @@ export default function Joueur() {
     return () => supabase.removeChannel(channel);
   }, [joueurId]);
 
-  // Charge l'historique complet des lancers de la session
+  // Charge l'historique complet
   const chargerHistorique = useCallback(async (sid, mode) => {
-    if (!sid || !connexionTimeRef.current) return;
+    if (!sid) return;
     const { data } = await supabase
-      .from("lancers")
-      .select("*")
-      .eq("session_id", sid)
-      .gt("created_at", connexionTimeRef.current)
-      .order("created_at", { ascending: false })
-      .limit(30);
-
+    .from("lancers")
+    .select("*")
+    .eq("session_id", sessionId)
+    .eq("auteur", "MJ")
+    .gt("created_at", connexionTimeRef.current)
+    .order("created_at", { ascending: false })
+    .limit(1);
     if (data) {
-      setHistory(
-        data.map((r) => ({
-          ...r,
-          status: getStatus(r.valeur, r.bonus, r.total, r.faces, r.seuil, mode),
-        }))
-      );
+      const withStatus = data.map((r) => ({
+        ...r,
+        status: getStatus(r.valeur, r.bonus, r.total, r.faces, r.seuil, mode)
+      }));
+      setHistory(withStatus);
     }
   }, []);
 
   // Polling toutes les 500ms
-  // ⚠️ modeCritique lu via ref → pas de closure figée, pas de reset du timer
   useEffect(() => {
     if (!sessionId) return;
 
-    chargerHistorique(sessionId, modeCritiqueRef.current);
+    chargerHistorique(sessionId, modeCritique);
 
     const interval = setInterval(async () => {
-      if (!connexionTimeRef.current) return;
-
       const { data } = await supabase
         .from("lancers")
         .select("*")
         .eq("session_id", sessionId)
         .eq("auteur", "MJ")
-        .gt("created_at", connexionTimeRef.current)
+        .gt("created_at", connexionTimeRef.current) // ✅ MODIFIÉ
         .order("created_at", { ascending: false })
         .limit(1);
 
       if (data && data.length > 0) {
         const dernier = data[0];
         if (dernier.id !== lastLancerIdRef.current) {
-          lastLancerIdRef.current = dernier.id; // ← mémorise le nouveau lancer
-          const status = getStatus(
-            dernier.valeur,
-            dernier.bonus,
-            dernier.total,
-            dernier.faces,
-            dernier.seuil,
-            modeCritiqueRef.current // ← toujours à jour via la ref
-          );
+          lastLancerIdRef.current = dernier.id;
+          const status = getStatus(dernier.valeur, dernier.bonus, dernier.total, dernier.faces, dernier.seuil, modeCritique);
           setPopupMJ({ ...dernier, status });
           setTimeout(() => setPopupMJ(null), 5000);
-          chargerHistorique(sessionId, modeCritiqueRef.current);
+          chargerHistorique(sessionId, modeCritique);
         }
       }
     }, 500);
 
     return () => clearInterval(interval);
-  }, [sessionId, chargerHistorique]); // ← modeCritique retiré des deps
+  }, [sessionId, modeCritique, chargerHistorique]);
 
   const lancerDe = useCallback(async (faces) => {
     if (rolling || !joueurId) return;
@@ -178,7 +161,7 @@ export default function Joueur() {
       setActiveDie(null);
 
       await supabase.from("lancers").insert([{
-        valeur, bonus: b, total, faces, seuil: s, session_id: sessionId, auteur: nom,
+        valeur, bonus: b, total, faces, seuil: s, session_id: sessionId, auteur: nom
       }]);
     }, 400);
   }, [rolling, bonus, seuil, modeCritique, nom, joueurId, sessionId]);
