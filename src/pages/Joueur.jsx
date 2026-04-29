@@ -37,8 +37,8 @@ export default function Joueur() {
   const [activeDie, setActiveDie] = useState(null);
   const [popupMJ, setPopupMJ] = useState(null);
 
-  const lastLancerIdRef = useRef(null);
-  const connexionTimeRef = useRef(null); // ← nouveau
+  const connexionTimeRef = useRef(null);
+  const lastLancerIdRef = useRef(null); // ← ajouté
 
   const rejoindre = async () => {
     if (!code.trim() || !nom.trim()) return;
@@ -68,7 +68,7 @@ export default function Joueur() {
       setJoueurId(joueur.id);
       setBonus(joueur.bonus);
       setSeuil(joueur.seuil);
-      connexionTimeRef.current = new Date().toISOString(); // ← nouveau
+      connexionTimeRef.current = new Date().toISOString();
       setEtape("jeu");
     }
 
@@ -91,39 +91,42 @@ export default function Joueur() {
     return () => supabase.removeChannel(channel);
   }, [joueurId]);
 
-  // Charge l'historique complet
+  // Charge l'historique complet des lancers de la session
   const chargerHistorique = useCallback(async (sid, mode) => {
-    if (!sid) return;
+    if (!sid || !connexionTimeRef.current) return;
     const { data } = await supabase
-    .from("lancers")
-    .select("*")
-    .eq("session_id", sessionId)
-    .eq("auteur", "MJ")
-    .gt("created_at", connexionTimeRef.current)
-    .order("created_at", { ascending: false })
-    .limit(1);
-    if (data) {
-      const withStatus = data.map((r) => ({
-        ...r,
-        status: getStatus(r.valeur, r.bonus, r.total, r.faces, r.seuil, mode)
-      }));
-      setHistory(withStatus);
-    }
-  }, []);
+      .from("lancers")
+      .select("*")
+      .eq("session_id", sid)
+      .gt("created_at", connexionTimeRef.current)
+      .order("created_at", { ascending: false })
+      .limit(30);
 
-  // Polling toutes les 500ms
+    if (data) {
+      setHistory(
+        data.map((r) => ({
+          ...r,
+          status: getStatus(r.valeur, r.bonus, r.total, r.faces, r.seuil, mode),
+        }))
+      );
+    }
+  }, []); // ← pas de dépendances instables : on lit connexionTimeRef via ref
+
+  // Polling toutes les 500ms pour détecter les lancers du MJ
   useEffect(() => {
     if (!sessionId) return;
 
     chargerHistorique(sessionId, modeCritique);
 
     const interval = setInterval(async () => {
+      if (!connexionTimeRef.current) return;
+
       const { data } = await supabase
         .from("lancers")
         .select("*")
         .eq("session_id", sessionId)
         .eq("auteur", "MJ")
-        .gt("created_at", connexionTimeRef.current) // ← modifié
+        .gt("created_at", connexionTimeRef.current)
         .order("created_at", { ascending: false })
         .limit(1);
 
@@ -131,7 +134,14 @@ export default function Joueur() {
         const dernier = data[0];
         if (dernier.id !== lastLancerIdRef.current) {
           lastLancerIdRef.current = dernier.id;
-          const status = getStatus(dernier.valeur, dernier.bonus, dernier.total, dernier.faces, dernier.seuil, modeCritique);
+          const status = getStatus(
+            dernier.valeur,
+            dernier.bonus,
+            dernier.total,
+            dernier.faces,
+            dernier.seuil,
+            modeCritique
+          );
           setPopupMJ({ ...dernier, status });
           setTimeout(() => setPopupMJ(null), 5000);
           chargerHistorique(sessionId, modeCritique);
@@ -161,7 +171,7 @@ export default function Joueur() {
       setActiveDie(null);
 
       await supabase.from("lancers").insert([{
-        valeur, bonus: b, total, faces, seuil: s, session_id: sessionId, auteur: nom
+        valeur, bonus: b, total, faces, seuil: s, session_id: sessionId, auteur: nom,
       }]);
     }, 400);
   }, [rolling, bonus, seuil, modeCritique, nom, joueurId, sessionId]);
