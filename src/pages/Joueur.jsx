@@ -95,11 +95,13 @@ export default function Joueur() {
   const chargerHistorique = useCallback(async (sid, mode) => {
     if (!sid) return;
     const { data } = await supabase
-      .from("lancers")
-      .select("*")
-      .eq("session_id", sid)
-      .order("created_at", { ascending: false })
-      .limit(30);
+    .from("lancers")
+    .select("*")
+    .eq("session_id", sessionId)
+    .eq("auteur", "MJ")
+    .gt("created_at", connexionTimeRef.current)
+    .order("created_at", { ascending: false })
+    .limit(1);
     if (data) {
       const withStatus = data.map((r) => ({
         ...r,
