@@ -38,7 +38,13 @@ export default function Joueur() {
   const [popupMJ, setPopupMJ] = useState(null);
 
   const connexionTimeRef = useRef(null);
-  const lastLancerIdRef = useRef(null); // ← ajouté
+  const lastLancerIdRef = useRef(null);
+  const modeCritiqueRef = useRef(modeCritique); // ← ref pour éviter la closure figée
+
+  // Synchronise la ref à chaque changement de modeCritique
+  useEffect(() => {
+    modeCritiqueRef.current = modeCritique;
+  }, [modeCritique]);
 
   const rejoindre = async () => {
     if (!code.trim() || !nom.trim()) return;
@@ -110,13 +116,14 @@ export default function Joueur() {
         }))
       );
     }
-  }, []); // ← pas de dépendances instables : on lit connexionTimeRef via ref
+  }, []);
 
-  // Polling toutes les 500ms pour détecter les lancers du MJ
+  // Polling toutes les 500ms
+  // ⚠️ modeCritique lu via ref → pas de closure figée, pas de reset du timer
   useEffect(() => {
     if (!sessionId) return;
 
-    chargerHistorique(sessionId, modeCritique);
+    chargerHistorique(sessionId, modeCritiqueRef.current);
 
     const interval = setInterval(async () => {
       if (!connexionTimeRef.current) return;
@@ -133,24 +140,24 @@ export default function Joueur() {
       if (data && data.length > 0) {
         const dernier = data[0];
         if (dernier.id !== lastLancerIdRef.current) {
-          lastLancerIdRef.current = dernier.id;
+          lastLancerIdRef.current = dernier.id; // ← mémorise le nouveau lancer
           const status = getStatus(
             dernier.valeur,
             dernier.bonus,
             dernier.total,
             dernier.faces,
             dernier.seuil,
-            modeCritique
+            modeCritiqueRef.current // ← toujours à jour via la ref
           );
           setPopupMJ({ ...dernier, status });
           setTimeout(() => setPopupMJ(null), 5000);
-          chargerHistorique(sessionId, modeCritique);
+          chargerHistorique(sessionId, modeCritiqueRef.current);
         }
       }
     }, 500);
 
     return () => clearInterval(interval);
-  }, [sessionId, modeCritique, chargerHistorique]);
+  }, [sessionId, chargerHistorique]); // ← modeCritique retiré des deps
 
   const lancerDe = useCallback(async (faces) => {
     if (rolling || !joueurId) return;
