@@ -25,6 +25,7 @@ export default function Joueur() {
   const [nom, setNom] = useState("");
   const [erreur, setErreur] = useState(null);
   const [loading, setLoading] = useState(false);
+  const [connecte, setConnecte] = useState(false); // ✅
 
   const [sessionId, setSessionId] = useState(null);
   const [joueurId, setJoueurId] = useState(null);
@@ -38,7 +39,7 @@ export default function Joueur() {
   const [popupMJ, setPopupMJ] = useState(null);
 
   const lastLancerIdRef = useRef(null);
-  const connexionTimeRef = useRef(null); // ✅ AJOUT
+  const connexionTimeRef = useRef(null);
 
   const rejoindre = async () => {
     if (!code.trim() || !nom.trim()) return;
@@ -68,7 +69,8 @@ export default function Joueur() {
       setJoueurId(joueur.id);
       setBonus(joueur.bonus);
       setSeuil(joueur.seuil);
-      connexionTimeRef.current = new Date().toISOString(); // ✅ AJOUT
+      connexionTimeRef.current = new Date().toISOString();
+      setConnecte(true); // ✅
       setEtape("jeu");
     }
 
@@ -109,9 +111,9 @@ export default function Joueur() {
     }
   }, []);
 
-  // Polling toutes les 500ms
+  // ✅ Polling démarre seulement après connexion
   useEffect(() => {
-    if (!sessionId) return;
+    if (!sessionId || !connecte) return;
 
     chargerHistorique(sessionId, modeCritique);
 
@@ -121,7 +123,7 @@ export default function Joueur() {
         .select("*")
         .eq("session_id", sessionId)
         .eq("auteur", "MJ")
-        .gt("created_at", connexionTimeRef.current) // ✅ MODIFIÉ
+        .gt("created_at", connexionTimeRef.current)
         .order("created_at", { ascending: false })
         .limit(1);
 
@@ -138,7 +140,7 @@ export default function Joueur() {
     }, 500);
 
     return () => clearInterval(interval);
-  }, [sessionId, modeCritique, chargerHistorique]);
+  }, [sessionId, connecte, modeCritique, chargerHistorique]);
 
   const lancerDe = useCallback(async (faces) => {
     if (rolling || !joueurId) return;
