@@ -129,6 +129,7 @@ export default function Joueur() {
 
       if (data && data.length > 0) {
         const dernier = data[0];
+        console.log("dernier MJ:", dernier.id, "ref:", lastLancerIdRef.current);
         if (dernier.id !== lastLancerIdRef.current) {
           lastLancerIdRef.current = dernier.id;
           const status = getStatus(dernier.valeur, dernier.bonus, dernier.total, dernier.faces, dernier.seuil, modeCritique);
