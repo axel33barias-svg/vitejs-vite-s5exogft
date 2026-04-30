@@ -20,12 +20,13 @@ const colors = {
 };
 
 export default function Joueur() {
-  const [etape, setEtape] = useState("accueil");
+  const [etape, setEtape] = useState("accueil"); // accueil | confirmation | jeu
   const [code, setCode] = useState("");
   const [nom, setNom] = useState("");
   const [erreur, setErreur] = useState(null);
   const [loading, setLoading] = useState(false);
-  const [connecte, setConnecte] = useState(false); // ✅
+  const [connecte, setConnecte] = useState(false);
+  const [joueurExistant, setJoueurExistant] = useState(null); // joueur déjà dans la session
 
   const [sessionId, setSessionId] = useState(null);
   const [joueurId, setJoueurId] = useState(null);
@@ -41,11 +42,13 @@ export default function Joueur() {
   const lastLancerIdRef = useRef(null);
   const connexionTimeRef = useRef(null);
 
-  const rejoindre = async () => {
+  // Étape 1 — vérification du code et du nom
+  const verifier = async () => {
     if (!code.trim() || !nom.trim()) return;
     setLoading(true);
     setErreur(null);
 
+    // Cherche la session par code
     const { data: session } = await supabase
       .from("sessions")
       .select("id")
@@ -58,23 +61,63 @@ export default function Joueur() {
       return;
     }
 
+    setSessionId(session.id);
+
+    // Vérifie si ce nom existe déjà dans CETTE session
+    const { data: existant } = await supabase
+      .from("joueurs")
+      .select("id, nom, bonus, seuil")
+      .eq("session_id", session.id)
+      .eq("nom", nom.trim())
+      .maybeSingle();
+
+    if (existant) {
+      // Un joueur avec ce nom existe déjà dans cette session
+      setJoueurExistant(existant);
+      setEtape("confirmation");
+    } else {
+      // Nom libre — on crée le joueur directement
+      await creerJoueur(session.id, nom.trim());
+    }
+
+    setLoading(false);
+  };
+
+  // Crée un nouveau joueur
+  const creerJoueur = async (sid, nomJoueur) => {
     const { data: joueur } = await supabase
       .from("joueurs")
-      .insert([{ session_id: session.id, nom: nom.trim(), bonus: 0, seuil: 0 }])
+      .insert([{ session_id: sid, nom: nomJoueur, bonus: 0, seuil: 0 }])
       .select()
       .single();
 
     if (joueur) {
-      setSessionId(session.id);
       setJoueurId(joueur.id);
       setBonus(joueur.bonus);
       setSeuil(joueur.seuil);
       connexionTimeRef.current = new Date().toISOString();
-      setConnecte(true); // ✅
+      setConnecte(true);
       setEtape("jeu");
     }
+  };
 
-    setLoading(false);
+  // Se reconnecter sur l'ancien joueur
+  const seReconnecter = () => {
+    if (!joueurExistant) return;
+    setJoueurId(joueurExistant.id);
+    setBonus(joueurExistant.bonus);
+    setSeuil(joueurExistant.seuil);
+    connexionTimeRef.current = new Date().toISOString();
+    setConnecte(true);
+    setEtape("jeu");
+    setJoueurExistant(null);
+  };
+
+  // Changer de nom — retour au formulaire
+  const changerNom = () => {
+    setNom("");
+    setJoueurExistant(null);
+    setEtape("accueil");
   };
 
   // Écoute les modifs du MJ sur le joueur
@@ -111,7 +154,7 @@ export default function Joueur() {
     }
   }, []);
 
-  // ✅ Polling démarre seulement après connexion
+  // Polling 500ms — démarre seulement après connexion
   useEffect(() => {
     if (!sessionId || !connecte) return;
 
@@ -129,7 +172,6 @@ export default function Joueur() {
 
       if (data && data.length > 0) {
         const dernier = data[0];
-        console.log("dernier MJ:", dernier.id, "ref:", lastLancerIdRef.current);
         if (dernier.id !== lastLancerIdRef.current) {
           lastLancerIdRef.current = dernier.id;
           const status = getStatus(dernier.valeur, dernier.bonus, dernier.total, dernier.faces, dernier.seuil, modeCritique);
@@ -170,6 +212,7 @@ export default function Joueur() {
   const resultColor = lastRoll?.status ? colors[lastRoll.status.cls] : "#e0e0e0";
   const popupColor = popupMJ?.status ? colors[popupMJ.status.cls] : "#e94560";
 
+  // Page d'accueil
   if (etape === "accueil") return (
     <div style={{ minHeight: "100vh", background: "#1a1a2e", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "'Segoe UI', Tahoma, Geneva, Verdana, sans-serif" }}>
       <div style={{ maxWidth: 380, width: "90%", background: "#16213e", padding: 30, borderRadius: 15, border: "1px solid #0f3460", textAlign: "center", boxShadow: "0 10px 30px rgba(0,0,0,0.5)" }}>
@@ -197,21 +240,51 @@ export default function Joueur() {
           <label style={{ display: "block", fontSize: 11, color: "#95a5a6", textTransform: "uppercase", letterSpacing: 1, marginBottom: 6 }}>Nom du personnage</label>
           <input type="text" value={nom}
             onChange={(e) => setNom(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && rejoindre()}
+            onKeyDown={(e) => e.key === "Enter" && verifier()}
             placeholder="Ex: Aragorn, Gandalf..."
             style={{ width: "100%", background: "#1a1a2e", border: "1px solid #0f3460", color: "white", padding: "12px", borderRadius: 8, fontSize: "1rem", boxSizing: "border-box", outline: "none" }}
           />
         </div>
 
-        <button onClick={rejoindre} disabled={!code.trim() || !nom.trim() || loading}
+        <button onClick={verifier} disabled={!code.trim() || !nom.trim() || loading}
           style={{ width: "100%", background: code.trim() && nom.trim() ? "#e94560" : "#0f3460", color: "white", border: "none", padding: "12px 0", borderRadius: 8, fontWeight: "bold", fontSize: 16, cursor: code.trim() && nom.trim() ? "pointer" : "not-allowed" }}
         >
-          {loading ? "Connexion…" : "Entrer dans la partie ⚔️"}
+          {loading ? "Vérification…" : "Entrer dans la partie ⚔️"}
         </button>
       </div>
     </div>
   );
 
+  // Page de confirmation — nom déjà pris
+  if (etape === "confirmation") return (
+    <div style={{ minHeight: "100vh", background: "#1a1a2e", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "'Segoe UI', Tahoma, Geneva, Verdana, sans-serif" }}>
+      <div style={{ maxWidth: 380, width: "90%", background: "#16213e", padding: 30, borderRadius: 15, border: "1px solid #f1c40f", textAlign: "center", boxShadow: "0 0 30px #f1c40f33" }}>
+        <div style={{ fontSize: 48, marginBottom: 8 }}>⚠️</div>
+        <h2 style={{ color: "#f1c40f", marginTop: 0, fontSize: "1.3rem" }}>
+          "{joueurExistant?.nom}" est déjà connecté !
+        </h2>
+        <p style={{ color: "#95a5a6", fontSize: "0.9rem", marginBottom: 24 }}>
+          Un joueur avec ce nom est déjà dans la partie.<br />
+          C'est vous qui avez fermé la page par erreur ?
+        </p>
+
+        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          <button onClick={seReconnecter}
+            style={{ width: "100%", background: "#4ee44e", color: "#1a1a2e", border: "none", padding: "12px 0", borderRadius: 8, fontWeight: "bold", fontSize: 15, cursor: "pointer" }}
+          >
+            ✅ Oui, me reconnecter
+          </button>
+          <button onClick={changerNom}
+            style={{ width: "100%", background: "#0f3460", color: "white", border: "1px solid #555", padding: "12px 0", borderRadius: 8, fontWeight: "bold", fontSize: 15, cursor: "pointer" }}
+          >
+            ✏️ Non, changer de nom
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+
+  // Espace jeu
   return (
     <div style={{ minHeight: "100vh", background: "#1a1a2e", fontFamily: "'Segoe UI', Tahoma, Geneva, Verdana, sans-serif", color: "white" }}>
 
