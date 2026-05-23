@@ -1,5 +1,8 @@
 import { useState, useCallback, useEffect, useRef } from "react";
 import { supabase } from "../supabase";
+import InventaireJoueur from "./components/InventaireJoueur";
+import InventaireGlobal from "./components/InventaireGlobal";
+import LogsInventaire from "./components/LogsInventaire";
 
 const FACES = [4, 6, 8, 10, 12, 20, 100];
 
@@ -380,6 +383,23 @@ export default function Joueur() {
             </div>
           </div>
         )}
+        <InventaireJoueur
+        sessionId={sessionId}
+        joueurId={joueurId}
+        joueurNom={nom}
+        inventaireGlobalActif={false}
+        onPopup={(type, msg) => {
+        setPopupMJ({ total: msg, status: { cls: type }, faces: "" });
+        setTimeout(() => setPopupMJ(null), 4000);
+  }}
+/>
+       <InventaireGlobal
+       sessionId={sessionId}
+       joueurId={joueurId}
+       joueurNom={nom}
+       actif={true}
+/>
+      <LogsInventaire sessionId={sessionId} isMJ={false} />
       </div>
     </div>
   );

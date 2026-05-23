@@ -1,6 +1,10 @@
 import { useState, useCallback, useEffect } from "react";
 import { QRCodeSVG } from "qrcode.react";
 import { supabase } from "../supabase";
+import InventaireJoueur from "./components/InventaireJoueur";
+import InventaireGlobal from "./components/InventaireGlobal";
+import LogsInventaire from "./components/LogsInventaire";
+import EnvoiObjetMJ from "./components/EnvoiObjetMJ";
 
 const FACES = [4, 6, 8, 10, 12, 20, 100];
 
@@ -38,6 +42,7 @@ export default function MJ({ session }) {
   const [showQR, setShowQR] = useState(false);
   const [joueurs, setJoueurs] = useState([]);
   const [confirmReset, setConfirmReset] = useState(false);
+  const [inventaireGlobalActif, setInventaireGlobalActif] = useState(false);
 
   useEffect(() => {
     const initSession = async () => {
@@ -58,19 +63,31 @@ export default function MJ({ session }) {
   }, [session]);
 
   const creerNouvelleSession = async () => {
+    // Récupère l'ID de session actuel directement depuis Supabase
+    const { data: sessionActuelle } = await supabase
+      .from("sessions")
+      .select("id")
+      .eq("mj_id", session.user.id)
+      .maybeSingle();
+  
+    if (sessionActuelle) {
+      await supabase.from("lancers").delete().eq("session_id", sessionActuelle.id);
+      await supabase.from("joueurs").delete().eq("session_id", sessionActuelle.id);
+      await supabase.from("objets").delete().eq("session_id", sessionActuelle.id);
+      await supabase.from("offres").delete().eq("session_id", sessionActuelle.id);
+      await supabase.from("logs_inventaire").delete().eq("session_id", sessionActuelle.id);
+      await supabase.from("inventaire_global").delete().eq("session_id", sessionActuelle.id);
+      await supabase.from("sessions").delete().eq("id", sessionActuelle.id);
+    }
+  
     let code = genererCode();
     let ok = false;
     while (!ok) {
-      await supabase.from("lancers").delete().eq("session_id", sessionId || "");
-      await supabase.from("joueurs").delete().eq("session_id", sessionId || "");
-      await supabase.from("sessions").delete().eq("mj_id", session.user.id);
-
       const { data: newSession, error } = await supabase
         .from("sessions")
         .insert([{ mj_id: session.user.id, code }])
         .select()
         .single();
-
       if (!error && newSession) {
         setSessionId(newSession.id);
         setCodeRoom(newSession.code);
@@ -312,6 +329,7 @@ export default function MJ({ session }) {
                       <input type="number" value={j.seuil} onChange={(e) => updateJoueur(j.id, "seuil", e.target.value)}
                         style={{ width: 52, background: "#1a1a2e", border: "1px solid #0f3460", color: "white", padding: "4px 6px", borderRadius: 4, textAlign: "center", fontSize: 13, fontWeight: "bold" }}
                       />
+                      <EnvoiObjetMJ sessionId={sessionId} joueur={j} />
                     </div>
                   </div>
                 ))}
@@ -339,6 +357,14 @@ export default function MJ({ session }) {
               ))}
             </div>
           </div>
+        <InventaireGlobal
+           sessionId={sessionId}
+           joueurNom="MJ"
+           isMJ={true}
+           actif={inventaireGlobalActif}
+           onToggle={() => setInventaireGlobalActif(!inventaireGlobalActif)}
+           />
+           <LogsInventaire sessionId={sessionId} isMJ={true} />
         </div>
       </div>
     </div>
