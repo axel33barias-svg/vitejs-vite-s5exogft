@@ -3,6 +3,7 @@ import { supabase } from "../supabase";
 import InventaireJoueur from "./components/InventaireJoueur";
 import InventaireGlobal from "./components/InventaireGlobal";
 import LogsInventaire from "./components/LogsInventaire";
+import FichePersonnage from "./components/FichePersonnage";
 
 const FACES = [4, 6, 8, 10, 12, 20, 100];
 
@@ -23,35 +24,41 @@ const colors = {
 };
 
 export default function Joueur() {
-  const [etape, setEtape] = useState("accueil"); // accueil | confirmation | jeu
-  const [code, setCode] = useState("");
-  const [nom, setNom] = useState("");
-  const [erreur, setErreur] = useState(null);
-  const [loading, setLoading] = useState(false);
-  const [connecte, setConnecte] = useState(false);
-  const [joueurExistant, setJoueurExistant] = useState(null); // joueur déjà dans la session
+  const [etape, setEtape]               = useState("accueil");
+  const [code, setCode]                 = useState("");
+  const [nom, setNom]                   = useState("");
+  const [erreur, setErreur]             = useState(null);
+  const [loading, setLoading]           = useState(false);
+  const [joueurExistant, setJoueurExistant] = useState(null);
 
-  const [sessionId, setSessionId] = useState(null);
-  const [joueurId, setJoueurId] = useState(null);
-  const [bonus, setBonus] = useState(0);
-  const [seuil, setSeuil] = useState(0);
+  const [sessionId, setSessionId]       = useState(null);
+  const [joueurId, setJoueurId]         = useState(null);
+  const [bonus, setBonus]               = useState(0);
+  const [seuil, setSeuil]               = useState(0);
   const [modeCritique, setModeCritique] = useState("tous");
-  const [rolling, setRolling] = useState(false);
-  const [lastRoll, setLastRoll] = useState(null);
-  const [history, setHistory] = useState([]);
-  const [activeDie, setActiveDie] = useState(null);
-  const [popupMJ, setPopupMJ] = useState(null);
+  const [rolling, setRolling]           = useState(false);
+  const [lastRoll, setLastRoll]         = useState(null);
+  const [history, setHistory]           = useState([]);
+  const [activeDie, setActiveDie]       = useState(null);
+  const [popupMJ, setPopupMJ]           = useState(null);
 
-  const lastLancerIdRef = useRef(null);
-  const connexionTimeRef = useRef(null);
+  // Refs stables — pas de closure figée dans le polling
+  const lastLancerIdRef  = useRef(null);
+  const modeCritiqueRef  = useRef(modeCritique);
+  const sessionIdRef     = useRef(null);
+  const popupTimerRef    = useRef(null);
 
-  // Étape 1 — vérification du code et du nom
+  // Synchronise les refs à chaque render
+  useEffect(() => { modeCritiqueRef.current = modeCritique; }, [modeCritique]);
+  useEffect(() => { sessionIdRef.current = sessionId; },      [sessionId]);
+
+  // ─── Connexion ────────────────────────────────────────────────────────────
+
   const verifier = async () => {
     if (!code.trim() || !nom.trim()) return;
     setLoading(true);
     setErreur(null);
 
-    // Cherche la session par code
     const { data: session } = await supabase
       .from("sessions")
       .select("id")
@@ -64,9 +71,6 @@ export default function Joueur() {
       return;
     }
 
-    setSessionId(session.id);
-
-    // Vérifie si ce nom existe déjà dans CETTE session
     const { data: existant } = await supabase
       .from("joueurs")
       .select("id, nom, bonus, seuil")
@@ -75,18 +79,16 @@ export default function Joueur() {
       .maybeSingle();
 
     if (existant) {
-      // Un joueur avec ce nom existe déjà dans cette session
       setJoueurExistant(existant);
+      setSessionId(session.id);
       setEtape("confirmation");
     } else {
-      // Nom libre — on crée le joueur directement
       await creerJoueur(session.id, nom.trim());
     }
 
     setLoading(false);
   };
 
-  // Crée un nouveau joueur
   const creerJoueur = async (sid, nomJoueur) => {
     const { data: joueur } = await supabase
       .from("joueurs")
@@ -95,51 +97,74 @@ export default function Joueur() {
       .single();
 
     if (joueur) {
+      // ✅ Initialise la ref avec le dernier lancer MJ AVANT de lancer le polling
+      // On utilise le created_at du joueur (heure serveur Supabase) comme curseur
+      const { data: dernierMJ } = await supabase
+        .from("lancers")
+        .select("id")
+        .eq("session_id", sid)
+        .eq("auteur", "MJ")
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      lastLancerIdRef.current = dernierMJ?.id ?? "__aucun__";
+
+      // Déclenche le polling seulement maintenant
+      setSessionId(sid);
       setJoueurId(joueur.id);
       setBonus(joueur.bonus);
       setSeuil(joueur.seuil);
-      connexionTimeRef.current = new Date().toISOString();
-      setConnecte(true);
       setEtape("jeu");
     }
   };
 
-  // Se reconnecter sur l'ancien joueur
-  const seReconnecter = () => {
+  const seReconnecter = async () => {
     if (!joueurExistant) return;
+
+    const { data: dernierMJ } = await supabase
+      .from("lancers")
+      .select("id")
+      .eq("session_id", sessionId)
+      .eq("auteur", "MJ")
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    lastLancerIdRef.current = dernierMJ?.id ?? "__aucun__";
+
     setJoueurId(joueurExistant.id);
     setBonus(joueurExistant.bonus);
     setSeuil(joueurExistant.seuil);
-    connexionTimeRef.current = new Date().toISOString();
-    setConnecte(true);
-    setEtape("jeu");
     setJoueurExistant(null);
+    setEtape("jeu");
   };
 
-  // Changer de nom — retour au formulaire
   const changerNom = () => {
     setNom("");
     setJoueurExistant(null);
     setEtape("accueil");
   };
 
-  // Écoute les modifs du MJ sur le joueur
+  // ─── Realtime : changements MJ sur ce joueur ──────────────────────────────
+
   useEffect(() => {
     if (!joueurId) return;
     const channel = supabase
       .channel(`joueur-${joueurId}`)
       .on("postgres_changes",
         { event: "UPDATE", schema: "public", table: "joueurs", filter: `id=eq.${joueurId}` },
-        (payload) => {
-          setBonus(payload.new.bonus);
-          setSeuil(payload.new.seuil);
-          setModeCritique(payload.new.mode_critique || "tous");
+        ({ new: n }) => {
+          setBonus(n.bonus);
+          setSeuil(n.seuil);
+          setModeCritique(n.mode_critique || "tous");
         }
       ).subscribe();
     return () => supabase.removeChannel(channel);
   }, [joueurId]);
 
-  // Charge l'historique complet
+  // ─── Historique ───────────────────────────────────────────────────────────
+
   const chargerHistorique = useCallback(async (sid, mode) => {
     if (!sid) return;
     const { data } = await supabase
@@ -149,19 +174,19 @@ export default function Joueur() {
       .order("created_at", { ascending: false })
       .limit(30);
     if (data) {
-      const withStatus = data.map((r) => ({
+      setHistory(data.map((r) => ({
         ...r,
-        status: getStatus(r.valeur, r.bonus, r.total, r.faces, r.seuil, mode)
-      }));
-      setHistory(withStatus);
+        status: getStatus(r.valeur, r.bonus, r.total, r.faces, r.seuil, mode),
+      })));
     }
   }, []);
 
-  // Polling 500ms — démarre seulement après connexion
-  useEffect(() => {
-    if (!sessionId || !connecte) return;
+  // ─── Polling MJ — sessionId seul en dep, modeCritique lu via ref ──────────
 
-    chargerHistorique(sessionId, modeCritique);
+  useEffect(() => {
+    if (!sessionId) return;
+
+    chargerHistorique(sessionId, modeCritiqueRef.current);
 
     const interval = setInterval(async () => {
       const { data } = await supabase
@@ -169,24 +194,35 @@ export default function Joueur() {
         .select("*")
         .eq("session_id", sessionId)
         .eq("auteur", "MJ")
-        .gt("created_at", connexionTimeRef.current)
         .order("created_at", { ascending: false })
         .limit(1);
 
-      if (data && data.length > 0) {
-        const dernier = data[0];
-        if (dernier.id !== lastLancerIdRef.current) {
-          lastLancerIdRef.current = dernier.id;
-          const status = getStatus(dernier.valeur, dernier.bonus, dernier.total, dernier.faces, dernier.seuil, modeCritique);
-          setPopupMJ({ ...dernier, status });
-          setTimeout(() => setPopupMJ(null), 5000);
-          chargerHistorique(sessionId, modeCritique);
-        }
-      }
+      if (!data?.length) return;
+      const dernier = data[0];
+
+      // ✅ Compare les UUIDs Supabase — fiable, pas de décalage d'horloge
+      if (dernier.id === lastLancerIdRef.current) return;
+      lastLancerIdRef.current = dernier.id;
+
+      const status = getStatus(
+        dernier.valeur, dernier.bonus, dernier.total,
+        dernier.faces, dernier.seuil,
+        modeCritiqueRef.current,
+      );
+
+      if (popupTimerRef.current) clearTimeout(popupTimerRef.current);
+      setPopupMJ({ ...dernier, status });
+      chargerHistorique(sessionId, modeCritiqueRef.current);
+      popupTimerRef.current = setTimeout(() => setPopupMJ(null), 5000);
     }, 500);
 
-    return () => clearInterval(interval);
-  }, [sessionId, connecte, modeCritique, chargerHistorique]);
+    return () => {
+      clearInterval(interval);
+      if (popupTimerRef.current) clearTimeout(popupTimerRef.current);
+    };
+  }, [sessionId, chargerHistorique]); // ✅ modeCritique absent — lu via ref
+
+  // ─── Lancer de dé joueur ──────────────────────────────────────────────────
 
   const lancerDe = useCallback(async (faces) => {
     if (rolling || !joueurId) return;
@@ -198,24 +234,29 @@ export default function Joueur() {
       const b = parseInt(bonus) || 0;
       const s = parseInt(seuil) || 0;
       const total = valeur + b;
-      const status = getStatus(valeur, b, total, faces, s, modeCritique);
+      const status = getStatus(valeur, b, total, faces, s, modeCritiqueRef.current);
 
-      const roll = { valeur, bonus: b, total, faces, seuil: s, status, id: Date.now(), auteur: nom };
+      const roll = {
+        valeur, bonus: b, total, faces, seuil: s, status,
+        id: `local-${Date.now()}`, auteur: nom, // ✅ préfixe pour éviter collision avec UUIDs
+      };
       setLastRoll(roll);
       setHistory((prev) => [roll, ...prev].slice(0, 30));
       setRolling(false);
       setActiveDie(null);
 
       await supabase.from("lancers").insert([{
-        valeur, bonus: b, total, faces, seuil: s, session_id: sessionId, auteur: nom
+        valeur, bonus: b, total, faces, seuil: s,
+        session_id: sessionIdRef.current, auteur: nom,
       }]);
     }, 400);
-  }, [rolling, bonus, seuil, modeCritique, nom, joueurId, sessionId]);
+  }, [rolling, bonus, seuil, nom, joueurId]); // ✅ sessionId et modeCritique lus via ref
 
   const resultColor = lastRoll?.status ? colors[lastRoll.status.cls] : "#e0e0e0";
-  const popupColor = popupMJ?.status ? colors[popupMJ.status.cls] : "#e94560";
+  const popupColor  = popupMJ?.status  ? colors[popupMJ.status.cls]  : "#e94560";
 
-  // Page d'accueil
+  // ─── Rendu ────────────────────────────────────────────────────────────────
+
   if (etape === "accueil") return (
     <div style={{ minHeight: "100vh", background: "#1a1a2e", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "'Segoe UI', Tahoma, Geneva, Verdana, sans-serif" }}>
       <div style={{ maxWidth: 380, width: "90%", background: "#16213e", padding: 30, borderRadius: 15, border: "1px solid #0f3460", textAlign: "center", boxShadow: "0 10px 30px rgba(0,0,0,0.5)" }}>
@@ -233,8 +274,7 @@ export default function Joueur() {
           <label style={{ display: "block", fontSize: 11, color: "#95a5a6", textTransform: "uppercase", letterSpacing: 1, marginBottom: 6 }}>Code de la room</label>
           <input type="text" value={code}
             onChange={(e) => setCode(e.target.value.toUpperCase())}
-            placeholder="Ex: FEUX"
-            maxLength={4}
+            placeholder="Ex: FEUX" maxLength={4}
             style={{ width: "100%", background: "#1a1a2e", border: "1px solid #e94560", color: "white", padding: "12px", borderRadius: 8, fontSize: "1.5rem", fontWeight: "bold", boxSizing: "border-box", outline: "none", textAlign: "center", letterSpacing: 8 }}
           />
         </div>
@@ -258,63 +298,47 @@ export default function Joueur() {
     </div>
   );
 
-  // Page de confirmation — nom déjà pris
   if (etape === "confirmation") return (
     <div style={{ minHeight: "100vh", background: "#1a1a2e", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "'Segoe UI', Tahoma, Geneva, Verdana, sans-serif" }}>
       <div style={{ maxWidth: 380, width: "90%", background: "#16213e", padding: 30, borderRadius: 15, border: "1px solid #f1c40f", textAlign: "center", boxShadow: "0 0 30px #f1c40f33" }}>
         <div style={{ fontSize: 48, marginBottom: 8 }}>⚠️</div>
-        <h2 style={{ color: "#f1c40f", marginTop: 0, fontSize: "1.3rem" }}>
-          "{joueurExistant?.nom}" est déjà connecté !
-        </h2>
+        <h2 style={{ color: "#f1c40f", marginTop: 0, fontSize: "1.3rem" }}>"{joueurExistant?.nom}" est déjà connecté !</h2>
         <p style={{ color: "#95a5a6", fontSize: "0.9rem", marginBottom: 24 }}>
-          Un joueur avec ce nom est déjà dans la partie.<br />
-          C'est vous qui avez fermé la page par erreur ?
+          Un joueur avec ce nom est déjà dans la partie.<br />C'est vous qui avez fermé la page par erreur ?
         </p>
-
         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
           <button onClick={seReconnecter}
             style={{ width: "100%", background: "#4ee44e", color: "#1a1a2e", border: "none", padding: "12px 0", borderRadius: 8, fontWeight: "bold", fontSize: 15, cursor: "pointer" }}
-          >
-            ✅ Oui, me reconnecter
-          </button>
+          >✅ Oui, me reconnecter</button>
           <button onClick={changerNom}
             style={{ width: "100%", background: "#0f3460", color: "white", border: "1px solid #555", padding: "12px 0", borderRadius: 8, fontWeight: "bold", fontSize: 15, cursor: "pointer" }}
-          >
-            ✏️ Non, changer de nom
-          </button>
+          >✏️ Non, changer de nom</button>
         </div>
       </div>
     </div>
   );
 
-  // Espace jeu
   return (
     <div style={{ minHeight: "100vh", background: "#1a1a2e", fontFamily: "'Segoe UI', Tahoma, Geneva, Verdana, sans-serif", color: "white" }}>
 
-      {/* 🔔 POPUP MJ */}
+      {/* POPUP MJ */}
       {popupMJ && (
-        <div style={{
+        <div key={popupMJ.id} style={{
           position: "fixed", top: 20, left: "50%", transform: "translateX(-50%)",
           background: "#16213e", border: `2px solid ${popupColor}`,
           borderRadius: 12, padding: "16px 28px", textAlign: "center",
           boxShadow: `0 0 30px ${popupColor}66`, zIndex: 1000,
           minWidth: 220, animation: "fadeIn 0.3s ease",
         }}>
-          <div style={{ fontSize: 11, color: "#95a5a6", textTransform: "uppercase", letterSpacing: 1, marginBottom: 6 }}>
-            ⚔️ Le MJ lance un dé !
-          </div>
-          <div style={{ fontSize: 52, fontWeight: "bold", color: popupColor, lineHeight: 1 }}>
-            {popupMJ.total}
-          </div>
+          <div style={{ fontSize: 11, color: "#95a5a6", textTransform: "uppercase", letterSpacing: 1, marginBottom: 6 }}>⚔️ Le MJ lance un dé !</div>
+          <div style={{ fontSize: 52, fontWeight: "bold", color: popupColor, lineHeight: 1 }}>{popupMJ.total}</div>
           <div style={{ fontSize: 12, color: "#95a5a6", marginTop: 4 }}>
             d{popupMJ.faces} · {popupMJ.valeur}
             {popupMJ.bonus !== 0 ? ` ${popupMJ.bonus >= 0 ? "+" : ""}${popupMJ.bonus}` : ""}
             {" = "}{popupMJ.total}
           </div>
           {popupMJ.status && (
-            <div style={{ marginTop: 6, fontWeight: "bold", color: popupColor, fontSize: 14 }}>
-              {popupMJ.status.label}
-            </div>
+            <div style={{ marginTop: 6, fontWeight: "bold", color: popupColor, fontSize: 14 }}>{popupMJ.status.label}</div>
           )}
         </div>
       )}
@@ -332,6 +356,7 @@ export default function Joueur() {
       </div>
 
       <div style={{ maxWidth: 480, margin: "0 auto", padding: "24px 16px" }}>
+
         <div style={{ display: "flex", justifyContent: "space-around", background: "#16213e", border: "1px solid #0f3460", padding: 15, borderRadius: 10, marginBottom: 12 }}>
           {[{ label: "Modificateur", value: bonus }, { label: "Seuil", value: seuil }].map(({ label, value }) => (
             <div key={label} style={{ display: "flex", flexDirection: "column", gap: 4, alignItems: "center" }}>
@@ -371,8 +396,8 @@ export default function Joueur() {
           <div>
             <h3 style={{ fontSize: "0.9rem", color: "#95a5a6", textTransform: "uppercase", letterSpacing: 1, marginTop: 0 }}>Historique de la session</h3>
             <div style={{ background: "#16213e", border: "1px solid #0f3460", borderRadius: 10, maxHeight: 250, overflowY: "auto" }}>
-              {history.map((r) => (
-                <div key={r.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 14px", borderBottom: "1px solid #0f3460" }}>
+              {history.map((r, i) => (
+                <div key={r.id ?? i} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 14px", borderBottom: "1px solid #0f3460" }}>
                   <span style={{ color: r.auteur === "MJ" ? "#e94560" : "#95a5a6", fontSize: 12 }}>
                     {r.auteur === "MJ" ? "⚔️ MJ" : `🎲 ${r.auteur}`} · d{r.faces}
                   </span>
@@ -383,23 +408,21 @@ export default function Joueur() {
             </div>
           </div>
         )}
+
         <InventaireJoueur
-        sessionId={sessionId}
-        joueurId={joueurId}
-        joueurNom={nom}
-        inventaireGlobalActif={false}
-        onPopup={(type, msg) => {
-        setPopupMJ({ total: msg, status: { cls: type }, faces: "" });
-        setTimeout(() => setPopupMJ(null), 4000);
-  }}
-/>
-       <InventaireGlobal
-       sessionId={sessionId}
-       joueurId={joueurId}
-       joueurNom={nom}
-       actif={true}
-/>
-      <LogsInventaire sessionId={sessionId} isMJ={false} />
+          sessionId={sessionId}
+          joueurId={joueurId}
+          joueurNom={nom}
+          inventaireGlobalActif={false}
+          onPopup={(type, msg) => {
+            if (popupTimerRef.current) clearTimeout(popupTimerRef.current);
+            setPopupMJ({ total: msg, status: { cls: type }, faces: "", id: `popup-${Date.now()}` });
+            popupTimerRef.current = setTimeout(() => setPopupMJ(null), 4000);
+          }}
+        />
+        <InventaireGlobal sessionId={sessionId} joueurId={joueurId} joueurNom={nom} actif={true} />
+        <LogsInventaire sessionId={sessionId} isMJ={false} />
+        <FichePersonnage sessionId={sessionId} joueurId={joueurId} joueurNom={nom} isMJ={false} />
       </div>
     </div>
   );

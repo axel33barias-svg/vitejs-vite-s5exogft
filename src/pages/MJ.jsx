@@ -1,10 +1,12 @@
-import { useState, useCallback, useEffect } from "react";
+import { useState, useCallback, useEffect, useRef } from "react";
 import { QRCodeSVG } from "qrcode.react";
 import { supabase } from "../supabase";
 import InventaireJoueur from "./components/InventaireJoueur";
 import InventaireGlobal from "./components/InventaireGlobal";
 import LogsInventaire from "./components/LogsInventaire";
 import EnvoiObjetMJ from "./components/EnvoiObjetMJ";
+import ConfigStats from "./components/ConfigStats";
+import FichePersonnage from "./components/FichePersonnage";
 
 const FACES = [4, 6, 8, 10, 12, 20, 100];
 
@@ -30,19 +32,28 @@ const colors = {
 };
 
 export default function MJ({ session }) {
-  const [bonus, setBonus] = useState(0);
-  const [seuil, setSeuil] = useState(0);
-  const [rolling, setRolling] = useState(false);
-  const [lastRoll, setLastRoll] = useState(null);
-  const [history, setHistory] = useState([]);
-  const [activeDie, setActiveDie] = useState(null);
+  const [bonus, setBonus]               = useState(0);
+  const [seuil, setSeuil]               = useState(0);
+  const [rolling, setRolling]           = useState(false);
+  const [lastRoll, setLastRoll]         = useState(null);
+  const [history, setHistory]           = useState([]);
+  const [activeDie, setActiveDie]       = useState(null);
   const [modeCritique, setModeCritique] = useState("tous");
-  const [sessionId, setSessionId] = useState(null);
-  const [codeRoom, setCodeRoom] = useState(null);
-  const [showQR, setShowQR] = useState(false);
-  const [joueurs, setJoueurs] = useState([]);
+  const [sessionId, setSessionId]       = useState(null);
+  const [codeRoom, setCodeRoom]         = useState(null);
+  const [showQR, setShowQR]             = useState(false);
+  const [joueurs, setJoueurs]           = useState([]);
   const [confirmReset, setConfirmReset] = useState(false);
   const [inventaireGlobalActif, setInventaireGlobalActif] = useState(false);
+
+  // Refs pour éviter les closures figées
+  const modeCritiqueRef = useRef(modeCritique);
+  const sessionIdRef    = useRef(null);
+
+  useEffect(() => { modeCritiqueRef.current = modeCritique; }, [modeCritique]);
+  useEffect(() => { sessionIdRef.current = sessionId; },      [sessionId]);
+
+  // ─── Init session ─────────────────────────────────────────────────────────
 
   useEffect(() => {
     const initSession = async () => {
@@ -63,26 +74,28 @@ export default function MJ({ session }) {
   }, [session]);
 
   const creerNouvelleSession = async () => {
-    // Récupère l'ID de session actuel directement depuis Supabase
     const { data: sessionActuelle } = await supabase
       .from("sessions")
       .select("id")
       .eq("mj_id", session.user.id)
       .maybeSingle();
-  
+
     if (sessionActuelle) {
-      await supabase.from("lancers").delete().eq("session_id", sessionActuelle.id);
-      await supabase.from("joueurs").delete().eq("session_id", sessionActuelle.id);
-      await supabase.from("objets").delete().eq("session_id", sessionActuelle.id);
-      await supabase.from("offres").delete().eq("session_id", sessionActuelle.id);
-      await supabase.from("logs_inventaire").delete().eq("session_id", sessionActuelle.id);
-      await supabase.from("inventaire_global").delete().eq("session_id", sessionActuelle.id);
-      await supabase.from("sessions").delete().eq("id", sessionActuelle.id);
+      const sid = sessionActuelle.id;
+      await Promise.all([
+        supabase.from("lancers").delete().eq("session_id", sid),
+        supabase.from("joueurs").delete().eq("session_id", sid),
+        supabase.from("objets").delete().eq("session_id", sid),
+        supabase.from("offres").delete().eq("session_id", sid),
+        supabase.from("logs_inventaire").delete().eq("session_id", sid),
+        supabase.from("inventaire_global").delete().eq("session_id", sid),
+      ]);
+      await supabase.from("sessions").delete().eq("id", sid);
     }
-  
-    let code = genererCode();
+
     let ok = false;
     while (!ok) {
+      const code = genererCode();
       const { data: newSession, error } = await supabase
         .from("sessions")
         .insert([{ mj_id: session.user.id, code }])
@@ -95,22 +108,19 @@ export default function MJ({ session }) {
         setHistory([]);
         setLastRoll(null);
         ok = true;
-      } else {
-        code = genererCode();
       }
     }
     setConfirmReset(false);
   };
 
-  // ✅ supprimerJoueur au bon endroit — accessible depuis le JSX
   const supprimerJoueur = async (joueurId) => {
     const joueur = joueurs.find(j => j.id === joueurId);
     setJoueurs((prev) => prev.filter((j) => j.id !== joueurId));
-    if (joueur) {
-      await supabase.from("lancers").delete().eq("session_id", sessionId).eq("auteur", joueur.nom);
-    }
+    if (joueur) await supabase.from("lancers").delete().eq("session_id", sessionId).eq("auteur", joueur.nom);
     await supabase.from("joueurs").delete().eq("id", joueurId);
   };
+
+  // ─── Historique ───────────────────────────────────────────────────────────
 
   const chargerHistorique = useCallback(async (sid, mode) => {
     if (!sid) return;
@@ -121,13 +131,14 @@ export default function MJ({ session }) {
       .order("created_at", { ascending: false })
       .limit(30);
     if (data) {
-      const withStatus = data.map((r) => ({
+      setHistory(data.map((r) => ({
         ...r,
-        status: getStatus(r.valeur, r.bonus, r.total, r.faces, r.seuil, mode)
-      }));
-      setHistory(withStatus);
+        status: getStatus(r.valeur, r.bonus, r.total, r.faces, r.seuil, mode),
+      })));
     }
   }, []);
+
+  // ─── Init joueurs + Realtime arrivées ─────────────────────────────────────
 
   useEffect(() => {
     if (!sessionId) return;
@@ -135,32 +146,38 @@ export default function MJ({ session }) {
     supabase.from("joueurs").select("*").eq("session_id", sessionId)
       .then(({ data }) => { if (data) setJoueurs(data); });
 
-    chargerHistorique(sessionId, modeCritique);
+    chargerHistorique(sessionId, modeCritiqueRef.current);
 
-    const channelJoueurs = supabase
-      .channel("joueurs-session")
+    // ✅ Channel unique par session — évite les conflits si plusieurs onglets MJ
+    const channel = supabase
+      .channel(`joueurs-session-${sessionId}`)
       .on("postgres_changes",
         { event: "INSERT", schema: "public", table: "joueurs", filter: `session_id=eq.${sessionId}` },
-        (payload) => { setJoueurs((prev) => [...prev, payload.new]); }
+        ({ new: joueur }) => setJoueurs((prev) => [...prev, joueur])
       ).subscribe();
 
-    return () => supabase.removeChannel(channelJoueurs);
-  }, [sessionId]);
+    return () => supabase.removeChannel(channel);
+  }, [sessionId, chargerHistorique]);
 
-  // ✅ Polling à 500ms
+  // ─── Polling historique 500ms — modeCritique lu via ref ───────────────────
+
   useEffect(() => {
     if (!sessionId) return;
     const interval = setInterval(() => {
-      chargerHistorique(sessionId, modeCritique);
+      chargerHistorique(sessionId, modeCritiqueRef.current);
     }, 500);
     return () => clearInterval(interval);
-  }, [sessionId, modeCritique, chargerHistorique]);
+  }, [sessionId, chargerHistorique]); // ✅ modeCritique absent — lu via ref
+
+  // ─── Actions joueurs ──────────────────────────────────────────────────────
 
   const updateJoueur = async (joueurId, field, value) => {
     const parsed = parseInt(value) || 0;
     setJoueurs((prev) => prev.map((j) => j.id === joueurId ? { ...j, [field]: parsed } : j));
     await supabase.from("joueurs").update({ [field]: parsed }).eq("id", joueurId);
   };
+
+  // ─── Lancer de dé MJ ──────────────────────────────────────────────────────
 
   const lancerDe = useCallback(async (faces, secret = false) => {
     if (rolling) return;
@@ -172,9 +189,9 @@ export default function MJ({ session }) {
       const b = parseInt(bonus) || 0;
       const s = parseInt(seuil) || 0;
       const total = valeur + b;
-      const status = getStatus(valeur, b, total, faces, s, modeCritique);
+      const status = getStatus(valeur, b, total, faces, s, modeCritiqueRef.current);
 
-      const roll = { valeur, bonus: b, total, faces, seuil: s, status, id: Date.now(), secret, auteur: "MJ" };
+      const roll = { valeur, bonus: b, total, faces, seuil: s, status, id: `local-${Date.now()}`, secret, auteur: "MJ" };
       setLastRoll(roll);
       if (!secret) setHistory((prev) => [roll, ...prev].slice(0, 30));
       setRolling(false);
@@ -183,14 +200,16 @@ export default function MJ({ session }) {
       if (!secret) {
         await supabase.from("lancers").insert([{
           valeur, bonus: b, total, faces, seuil: s,
-          session_id: sessionId, auteur: "MJ"
+          session_id: sessionIdRef.current, auteur: "MJ",
         }]);
       }
     }, 400);
-  }, [rolling, bonus, seuil, modeCritique, sessionId]);
+  }, [rolling, bonus, seuil]); // ✅ modeCritique et sessionId lus via ref
 
   const resultColor = lastRoll?.status ? colors[lastRoll.status.cls] : "#e0e0e0";
   const siteUrl = window.location.origin + "/rejoindre";
+
+  // ─── Rendu ────────────────────────────────────────────────────────────────
 
   return (
     <div style={{ minHeight: "100vh", background: "#1a1a2e", fontFamily: "'Segoe UI', Tahoma, Geneva, Verdana, sans-serif", color: "white" }}>
@@ -209,6 +228,7 @@ export default function MJ({ session }) {
 
       <div style={{ maxWidth: 1000, margin: "0 auto", padding: "24px 16px", display: "grid", gridTemplateColumns: "1fr 1fr", gap: 20 }}>
         <div>
+          {/* Code room */}
           <div style={{ background: "#16213e", border: "1px solid #0f3460", borderRadius: 12, padding: 16, marginBottom: 12, textAlign: "center" }}>
             <div style={{ fontSize: 11, color: "#95a5a6", textTransform: "uppercase", letterSpacing: 1, marginBottom: 6 }}>Code de la room</div>
             <div style={{ fontSize: 42, fontWeight: "bold", color: "#e94560", letterSpacing: 8 }}>{codeRoom || "…"}</div>
@@ -220,9 +240,7 @@ export default function MJ({ session }) {
                   <QRCodeSVG value={siteUrl} size={140} />
                 </div>
                 <p style={{ color: "#95a5a6", fontSize: 11, marginTop: 8 }}>Scanner pour accéder au site</p>
-                <a href={siteUrl} target="_blank" rel="noreferrer" style={{ color: "#e94560", fontSize: 12, wordBreak: "break-all" }}>
-                  {siteUrl}
-                </a>
+                <a href={siteUrl} target="_blank" rel="noreferrer" style={{ color: "#e94560", fontSize: 12, wordBreak: "break-all" }}>{siteUrl}</a>
               </div>
             )}
 
@@ -244,11 +262,9 @@ export default function MJ({ session }) {
             </div>
           </div>
 
+          {/* Bonus / Seuil */}
           <div style={{ display: "flex", justifyContent: "space-around", background: "#16213e", border: "1px solid #0f3460", padding: 15, borderRadius: 10, marginBottom: 12 }}>
-            {[
-              { label: "Mon modificateur", value: bonus, set: setBonus },
-              { label: "Mon seuil", value: seuil, set: setSeuil },
-            ].map(({ label, value, set }) => (
+            {[{ label: "Mon modificateur", value: bonus, set: setBonus }, { label: "Mon seuil", value: seuil, set: setSeuil }].map(({ label, value, set }) => (
               <div key={label} style={{ display: "flex", flexDirection: "column", gap: 6, alignItems: "center" }}>
                 <label style={{ fontSize: "0.75rem", textTransform: "uppercase", letterSpacing: 1, color: "#95a5a6" }}>{label}</label>
                 <input type="number" value={value} onChange={(e) => set(e.target.value)}
@@ -258,6 +274,7 @@ export default function MJ({ session }) {
             ))}
           </div>
 
+          {/* Mode critique */}
           <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 10, background: "#16213e", border: "1px solid #0f3460", padding: "10px 15px", borderRadius: 10, marginBottom: 12 }}>
             <span style={{ fontSize: "0.75rem", color: "#95a5a6", textTransform: "uppercase", letterSpacing: 1 }}>Critiques :</span>
             {["tous", "d20"].map((mode) => (
@@ -269,6 +286,7 @@ export default function MJ({ session }) {
             ))}
           </div>
 
+          {/* Résultat */}
           <div style={{ background: "#16213e", border: "1px solid #0f3460", borderRadius: 12, padding: "1.5rem", textAlign: "center", marginBottom: 12, minHeight: 120, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center" }}>
             <div style={{ fontSize: 52, fontWeight: "bold", lineHeight: 1, color: resultColor, opacity: rolling ? 0.3 : 1, transition: "all 0.3s" }}>
               {rolling ? "…" : (lastRoll ? lastRoll.total : "?")}
@@ -287,6 +305,7 @@ export default function MJ({ session }) {
             {!lastRoll && !rolling && <div style={{ color: "#95a5a6", fontSize: 14 }}>Lancez un dé !</div>}
           </div>
 
+          {/* Dés normaux */}
           <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 8, marginBottom: 8 }}>
             {FACES.map((f) => (
               <button key={f} onClick={() => lancerDe(f)} disabled={rolling}
@@ -295,6 +314,7 @@ export default function MJ({ session }) {
             ))}
           </div>
 
+          {/* Dés secrets */}
           <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 8 }}>
             {FACES.map((f) => (
               <button key={f} onClick={() => lancerDe(f, true)} disabled={rolling}
@@ -306,6 +326,7 @@ export default function MJ({ session }) {
         </div>
 
         <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+          {/* Joueurs */}
           <div>
             <h3 style={{ color: "#95a5a6", fontSize: "0.85rem", textTransform: "uppercase", letterSpacing: 1, marginTop: 0 }}>
               Joueurs connectés ({joueurs.length})
@@ -337,17 +358,16 @@ export default function MJ({ session }) {
             )}
           </div>
 
+          {/* Historique */}
           <div>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-              <h3 style={{ color: "#95a5a6", fontSize: "0.85rem", textTransform: "uppercase", letterSpacing: 1, margin: 0 }}>
-                Historique de la session
-              </h3>
+              <h3 style={{ color: "#95a5a6", fontSize: "0.85rem", textTransform: "uppercase", letterSpacing: 1, margin: 0 }}>Historique de la session</h3>
               <span style={{ color: "#555", fontSize: 11 }}>↻ auto 500ms</span>
             </div>
             <div style={{ background: "#16213e", border: "1px solid #0f3460", borderRadius: 10, maxHeight: 400, overflowY: "auto" }}>
               {history.length === 0 && <p style={{ color: "#95a5a6", textAlign: "center", padding: 20, fontSize: 14 }}>Les lancers apparaîtront ici…</p>}
-              {history.map((r) => (
-                <div key={r.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 14px", borderBottom: "1px solid #0f3460", opacity: r.secret ? 0.7 : 1 }}>
+              {history.map((r, i) => (
+                <div key={r.id ?? i} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 14px", borderBottom: "1px solid #0f3460", opacity: r.secret ? 0.7 : 1 }}>
                   <span style={{ color: r.auteur === "MJ" ? "#e94560" : "#95a5a6", fontSize: 12 }}>
                     {r.auteur === "MJ" ? "⚔️ MJ" : `🎲 ${r.auteur}`} · d{r.faces}{r.secret && " 🔒"}
                   </span>
@@ -357,14 +377,11 @@ export default function MJ({ session }) {
               ))}
             </div>
           </div>
-        <InventaireGlobal
-           sessionId={sessionId}
-           joueurNom="MJ"
-           isMJ={true}
-           actif={inventaireGlobalActif}
-           onToggle={() => setInventaireGlobalActif(!inventaireGlobalActif)}
-           />
-           <LogsInventaire sessionId={sessionId} isMJ={true} />
+
+          <InventaireGlobal sessionId={sessionId} joueurNom="MJ" isMJ={true} actif={inventaireGlobalActif} onToggle={() => setInventaireGlobalActif(!inventaireGlobalActif)} />
+          <LogsInventaire sessionId={sessionId} isMJ={true} />
+          <ConfigStats sessionId={sessionId} />
+          <FichePersonnage sessionId={sessionId} joueurId={null} joueurNom="MJ" isMJ={true} />
         </div>
       </div>
     </div>
