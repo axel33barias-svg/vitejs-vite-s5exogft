@@ -64,10 +64,22 @@ export default function MJ({ session }) {
   }, [session]);
 
   const creerNouvelleSession = async () => {
-    // 1. Supprime juste la session — le CASCADE s'occupe du reste !
-    await supabase.from("sessions").delete().eq("mj_id", session.user.id);
-  
-    // 2. Crée la nouvelle session
+    const { data: sessionActuelle } = await supabase
+      .from("sessions")
+      .select("id")
+      .eq("mj_id", session.user.id)
+      .maybeSingle();
+
+    if (sessionActuelle) {
+      await supabase.from("lancers").delete().eq("session_id", sessionActuelle.id);
+      await supabase.from("joueurs").delete().eq("session_id", sessionActuelle.id);
+      await supabase.from("objets").delete().eq("session_id", sessionActuelle.id);
+      await supabase.from("offres").delete().eq("session_id", sessionActuelle.id);
+      await supabase.from("logs_inventaire").delete().eq("session_id", sessionActuelle.id);
+      await supabase.from("inventaire_global").delete().eq("session_id", sessionActuelle.id);
+      await supabase.from("sessions").delete().eq("id", sessionActuelle.id);
+    }
+
     let code = genererCode();
     let ok = false;
     while (!ok) {
@@ -130,14 +142,35 @@ export default function MJ({ session }) {
     return () => supabase.removeChannel(channelJoueurs);
   }, [sessionId]);
 
-  useEffect(() => {
-    if (!sessionId) return;
-    const interval = setInterval(() => {
-      chargerHistorique(sessionId, modeCritique);
-    }, 500);
-    return () => clearInterval(interval);
-  }, [sessionId, modeCritique, chargerHistorique]);
+// ✅ NOUVEAU - WebSocket pour l'historique (MJ)
+useEffect(() => {
+  if (!sessionId) return;
 
+  // Charge l'historique initial une fois
+  chargerHistorique(sessionId, modeCritique);
+
+  // S'abonne aux NOUVEAUX lancers
+  const channel = supabase
+    .channel(`lancers-mj-view-${sessionId}`)
+    .on(
+      "postgres_changes",
+      {
+        event: "INSERT",
+        schema: "public",
+        table: "lancers",
+        filter: `session_id=eq.${sessionId}`,
+      },
+      () => {
+        // Un nouveau lancer arrive, on recharge l'historique
+        chargerHistorique(sessionId, modeCritique);
+      }
+    )
+    .subscribe();
+
+  return () => {
+    supabase.removeChannel(channel);
+  };
+}, [sessionId, modeCritique, chargerHistorique]);
   const updateJoueur = async (joueurId, field, value) => {
     const parsed = parseInt(value) || 0;
     setJoueurs((prev) => prev.map((j) => j.id === joueurId ? { ...j, [field]: parsed } : j));
@@ -359,6 +392,7 @@ export default function MJ({ session }) {
           <LogsInventaire sessionId={sessionId} isMJ={true} />
           <ConfigStats sessionId={sessionId} />
           <FichePersonnage sessionId={sessionId} joueurId={null} joueurNom="MJ" isMJ={true} />
+
         </div>
         {/* fin colonne droite */}
 

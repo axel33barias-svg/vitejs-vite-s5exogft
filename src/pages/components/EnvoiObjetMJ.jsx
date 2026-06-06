@@ -14,25 +14,43 @@ export default function EnvoiObjetMJ({ sessionId, joueur }) {
   const [offresEnvoyees, setOffresEnvoyees] = useState([]);
 
   // ✅ Polling statut des offres envoyées
-  useEffect(() => {
-    if (offresEnvoyees.length === 0) return;
-    const interval = setInterval(async () => {
-      const ids = offresEnvoyees.map((o) => o.id);
-      const { data } = await supabase
-        .from("offres")
-        .select("id, statut")
-        .in("id", ids);
-      if (data) {
-        setOffresEnvoyees((prev) =>
-          prev.map((o) => {
-            const updated = data.find((d) => d.id === o.id);
-            return updated ? { ...o, statut: updated.statut } : o;
-          })
-        );
+// ✅ NOUVEAU - WebSocket pour suivre le statut des offres
+useEffect(() => {
+  if (offresEnvoyees.length === 0) return;
+
+  const ids = offresEnvoyees.map((o) => o.id);
+  
+  // Construction du filtre pour Supabase (plusieurs IDs)
+  const filterIds = ids.map(id => `id=eq.${id}`).join(',');
+  
+  const channel = supabase
+    .channel(`offres-mj-${sessionId}`)
+    .on(
+      "postgres_changes",
+      {
+        event: "UPDATE",
+        schema: "public",
+        table: "offres",
+        filter: `session_id=eq.${sessionId}`,
+      },
+      (payload) => {
+        const offreMaj = payload.new;
+        // Vérifier si l'offre modifiée fait partie de nos offres envoyées
+        if (ids.includes(offreMaj.id)) {
+          setOffresEnvoyees((prev) =>
+            prev.map((o) =>
+              o.id === offreMaj.id ? { ...o, statut: offreMaj.statut } : o
+            )
+          );
+        }
       }
-    }, 1000);
-    return () => clearInterval(interval);
-  }, [offresEnvoyees]);
+    )
+    .subscribe();
+
+  return () => {
+    supabase.removeChannel(channel);
+  };
+}, [offresEnvoyees, sessionId]);
 
   const envoyer = async () => {
     if (!nom.trim()) return;

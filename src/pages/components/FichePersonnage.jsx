@@ -163,6 +163,7 @@ export default function FichePersonnage({ sessionId, joueurId, joueurNom, isMJ =
       total,
       faces: de,
       seuil,
+      action_nom: nomStat,  // ← AJOUT : nom de la compétence
     }]);
 
     if (onRoll) onRoll(resultat);

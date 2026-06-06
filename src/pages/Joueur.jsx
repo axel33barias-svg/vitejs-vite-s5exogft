@@ -47,7 +47,7 @@ export default function Joueur() {
   const lastLancerIdRef = useRef(null);
   const connexionTimeRef = useRef(null);
 
-  // 🚨 Surveiller si le MJ a supprimé ce joueur
+  // Surveiller si le MJ a supprimé ce joueur
   useEffect(() => {
     if (!joueurId) return;
     
@@ -127,7 +127,7 @@ export default function Joueur() {
     }
   };
 
-  // 🚨 Version améliorée de seReconnecter
+  // Version améliorée de seReconnecter
   const seReconnecter = async () => {
     if (!joueurExistant) return;
     
@@ -191,52 +191,35 @@ export default function Joueur() {
     }
   }, []);
 
-// ✅ NOUVEAU - WebSocket pour les lancers MJ
-useEffect(() => {
-  if (!sessionId || !connecte) return;
+  useEffect(() => {
+    if (!sessionId || !connecte) return;
 
-  // Charge l'historique initial une fois
-  chargerHistorique(sessionId, modeCritique);
+    chargerHistorique(sessionId, modeCritique);
 
-  // S'abonne aux NOUVEAUX lancers (INSERT)
-  const channel = supabase
-    .channel(`lancers-mj-${sessionId}`)
-    .on(
-      "postgres_changes",
-      {
-        event: "INSERT",
-        schema: "public",
-        table: "lancers",
-        filter: `session_id=eq.${sessionId}`,
-      },
-      (payload) => {
-        const nouveauLancer = payload.new;
-        
-        // Ne montre que les lancers du MJ (pas les siens)
-        if (nouveauLancer.auteur === "MJ") {
-          const status = getStatus(
-            nouveauLancer.valeur,
-            nouveauLancer.bonus,
-            nouveauLancer.total,
-            nouveauLancer.faces,
-            nouveauLancer.seuil,
-            modeCritique
-          );
-          setPopupMJ({ ...nouveauLancer, status });
+    const interval = setInterval(async () => {
+      const { data } = await supabase
+        .from("lancers")
+        .select("*")
+        .eq("session_id", sessionId)
+        .eq("auteur", "MJ")
+        .gt("created_at", connexionTimeRef.current)
+        .order("created_at", { ascending: false })
+        .limit(1);
+
+      if (data && data.length > 0) {
+        const dernier = data[0];
+        if (dernier.id !== lastLancerIdRef.current) {
+          lastLancerIdRef.current = dernier.id;
+          const status = getStatus(dernier.valeur, dernier.bonus, dernier.total, dernier.faces, dernier.seuil, modeCritique);
+          setPopupMJ({ ...dernier, status });
           setTimeout(() => setPopupMJ(null), 5000);
-          
-          // Recharge l'historique pour voir le nouveau lancer
           chargerHistorique(sessionId, modeCritique);
         }
       }
-    )
-    .subscribe();
+    }, 500);
 
-  return () => {
-    supabase.removeChannel(channel);
-  };
-}, [sessionId, connecte, modeCritique, chargerHistorique]);
-
+    return () => clearInterval(interval);
+  }, [sessionId, connecte, modeCritique, chargerHistorique]);
 
   const lancerDe = useCallback(async (faces) => {
     if (rolling || !joueurId) return;
@@ -338,7 +321,7 @@ useEffect(() => {
   );
 
   // ============================================================
-  // ESPACE JEU - Version propre avec tous les composants
+  // ESPACE JEU
   // ============================================================
   return (
     <div style={{ minHeight: "100vh", background: "#1a1a2e", fontFamily: "'Segoe UI', Tahoma, Geneva, Verdana, sans-serif", color: "white" }}>
@@ -424,23 +407,40 @@ useEffect(() => {
           ))}
         </div>
 
-{/* SECTION : Historique */}
-{history.length > 0 && (
-  <div style={{ marginBottom: 20 }}>
-    <h3 style={{ fontSize: "0.9rem", color: "#95a5a6", textTransform: "uppercase", letterSpacing: 1, marginTop: 0 }}>Historique de la session</h3>
-    <div style={{ background: "#16213e", border: "1px solid #0f3460", borderRadius: 10, maxHeight: 200, overflowY: "auto" }}>
-      {history.map((r) => (
-        <div key={r.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 14px", borderBottom: "1px solid #0f3460" }}>
-          <span style={{ color: r.auteur === "MJ" ? "#e94560" : "#95a5a6", fontSize: 12 }}>
-            {r.auteur === "MJ" ? "⚔️ MJ" : `🎲 ${r.auteur}`} · d{r.faces}
-          </span>
-          <span style={{ fontWeight: "bold", fontSize: 16 }}>{r.total}</span>
-          {r.status && <span style={{ color: colors[r.status.cls], fontSize: 11 }}>{r.status.label}</span>}
-        </div>
-      ))}
-    </div>
-  </div>
-)}
+        {/* SECTION : Historique AMÉLIORÉ */}
+        {history.length > 0 && (
+          <div style={{ marginBottom: 20 }}>
+            <h3 style={{ fontSize: "0.9rem", color: "#95a5a6", textTransform: "uppercase", letterSpacing: 1, marginTop: 0 }}>📜 Actions récentes</h3>
+            <div style={{ background: "#16213e", border: "1px solid #0f3460", borderRadius: 10, maxHeight: 200, overflowY: "auto" }}>
+              {history.map((r) => (
+                <div key={r.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 14px", borderBottom: "1px solid #0f3460" }}>
+                  <span style={{ color: r.auteur === "MJ" ? "#e94560" : "#4ee44e", fontSize: 12 }}>
+                    {r.auteur === "MJ" ? "⚔️ MJ" : `🎲 ${r.auteur}`}
+                  </span>
+                  <span style={{ fontSize: 13, color: "#95a5a6", flex: 1, textAlign: "center" }}>
+                    {r.action_nom ? (
+                      <>a obtenu <strong style={{ color: "#f1c40f" }}>{r.total}</strong> en <strong style={{ color: "#e94560" }}>{r.action_nom}</strong></>
+                    ) : (
+                      <>a lancé un d{r.faces} et fait <strong style={{ color: "#f1c40f" }}>{r.total}</strong></>
+                    )}
+                  </span>
+                  {r.status && (
+                    <span style={{ 
+                      color: colors[r.status.cls], 
+                      fontSize: 11, 
+                      fontWeight: "bold",
+                      background: "rgba(0,0,0,0.3)",
+                      padding: "2px 6px",
+                      borderRadius: 4
+                    }}>
+                      {r.status.label}
+                    </span>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
 
         {/* SECTION : INVENTAIRE JOUEUR */}
         {sessionId && joueurId && (

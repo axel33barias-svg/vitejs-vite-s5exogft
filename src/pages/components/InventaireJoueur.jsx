@@ -42,15 +42,55 @@ export default function InventaireJoueur({ sessionId, joueurId, joueurNom, isMJ 
     if (data) setOffres(data);
   }, [sessionId, joueurId, isMJ]);
 
-  useEffect(() => {
-    chargerObjets();
-    chargerOffres();
-    const interval = setInterval(() => {
-      chargerObjets();
-      chargerOffres();
-    }, 1000);
-    return () => clearInterval(interval);
-  }, [chargerObjets, chargerOffres]);
+// ✅ NOUVEAU - WebSocket pour les objets et offres
+useEffect(() => {
+  if (!sessionId) return;
+
+  // Charge une fois au début
+  chargerObjets();
+  chargerOffres();
+
+  // Canal pour les objets (ajout, suppression, modification)
+  const channelObjets = supabase
+    .channel(`objets-${sessionId}-${joueurId}`)
+    .on(
+      "postgres_changes",
+      {
+        event: "*", // INSERT, UPDATE, DELETE
+        schema: "public",
+        table: "objets",
+        filter: `session_id=eq.${sessionId} AND joueur_id=eq.${joueurId}`,
+      },
+      () => {
+        // Un changement dans l'inventaire du joueur → recharge
+        chargerObjets();
+      }
+    )
+    .subscribe();
+
+  // Canal pour les offres
+  const channelOffres = supabase
+    .channel(`offres-${sessionId}-${joueurId}`)
+    .on(
+      "postgres_changes",
+      {
+        event: "*",
+        schema: "public",
+        table: "offres",
+        filter: `session_id=eq.${sessionId} AND joueur_id=eq.${joueurId}`,
+      },
+      () => {
+        // Une offre a changé (nouvelle, acceptée, refusée) → recharge
+        chargerOffres();
+      }
+    )
+    .subscribe();
+
+  return () => {
+    supabase.removeChannel(channelObjets);
+    supabase.removeChannel(channelOffres);
+  };
+}, [sessionId, joueurId, chargerObjets, chargerOffres]);
 
   // Accepter une offre
   const accepterOffre = async (offre) => {

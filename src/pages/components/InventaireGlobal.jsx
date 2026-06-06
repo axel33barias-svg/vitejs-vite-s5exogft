@@ -28,12 +28,36 @@ export default function InventaireGlobal({ sessionId, joueurId, joueurNom, isMJ 
     if (data) setObjets(data);
   }, [sessionId]);
 
-  useEffect(() => {
-    if (!actif && !isMJ) return;
-    charger();
-    const interval = setInterval(charger, 2000);
-    return () => clearInterval(interval);
-  }, [charger, actif, isMJ]);
+// ✅ NOUVEAU - WebSocket pour l'inventaire global
+useEffect(() => {
+  if (!sessionId) return;
+  if (!actif && !isMJ) return;
+
+  // Charge une fois au début
+  charger();
+
+  // Canal pour le butin commun
+  const channel = supabase
+    .channel(`inventaire-global-${sessionId}`)
+    .on(
+      "postgres_changes",
+      {
+        event: "*", // INSERT, UPDATE, DELETE
+        schema: "public",
+        table: "inventaire_global",
+        filter: `session_id=eq.${sessionId}`,
+      },
+      () => {
+        // Un changement dans le butin → recharge
+        charger();
+      }
+    )
+    .subscribe();
+
+  return () => {
+    supabase.removeChannel(channel);
+  };
+}, [sessionId, actif, isMJ, charger]);
 
   // MJ — ajouter un objet directement dans le global
   const [showForm, setShowForm] = useState(false);
