@@ -99,7 +99,8 @@ export default function MJ({ session }) {
       supabase.from("inventaire_global").delete().eq("session_id", sid),
       supabase.from("personnages").delete().eq("session_id", sid),     
       supabase.from("stats_personnage").delete().eq("session_id", sid), 
-      supabase.from("config_stats").delete().eq("session_id", sid),      
+      supabase.from("config_stats").delete().eq("session_id", sid),
+      supabase.from("sessions").delete().eq("session_id", sid)      
     ]);
 
     // 2. Met à jour le code — pas de DELETE/INSERT sur sessions
