@@ -1,6 +1,7 @@
-import { useState, useCallback, useEffect, useRef } from "react";
+import { useState, useCallback, useEffect } from "react";
 import { QRCodeSVG } from "qrcode.react";
 import { supabase } from "../supabase";
+import InventaireJoueur from "./components/InventaireJoueur";
 import InventaireGlobal from "./components/InventaireGlobal";
 import LogsInventaire from "./components/LogsInventaire";
 import EnvoiObjetMJ from "./components/EnvoiObjetMJ";
@@ -31,27 +32,19 @@ const colors = {
 };
 
 export default function MJ({ session }) {
-  const [bonus, setBonus]               = useState(0);
-  const [seuil, setSeuil]               = useState(0);
-  const [rolling, setRolling]           = useState(false);
-  const [lastRoll, setLastRoll]         = useState(null);
-  const [history, setHistory]           = useState([]);
-  const [activeDie, setActiveDie]       = useState(null);
+  const [bonus, setBonus] = useState(0);
+  const [seuil, setSeuil] = useState(0);
+  const [rolling, setRolling] = useState(false);
+  const [lastRoll, setLastRoll] = useState(null);
+  const [history, setHistory] = useState([]);
+  const [activeDie, setActiveDie] = useState(null);
   const [modeCritique, setModeCritique] = useState("tous");
-  const [sessionId, setSessionId]       = useState(null);
-  const [codeRoom, setCodeRoom]         = useState(null);
-  const [showQR, setShowQR]             = useState(false);
-  const [joueurs, setJoueurs]           = useState([]);
+  const [sessionId, setSessionId] = useState(null);
+  const [codeRoom, setCodeRoom] = useState(null);
+  const [showQR, setShowQR] = useState(false);
+  const [joueurs, setJoueurs] = useState([]);
   const [confirmReset, setConfirmReset] = useState(false);
   const [inventaireGlobalActif, setInventaireGlobalActif] = useState(false);
-
-  const modeCritiqueRef = useRef(modeCritique);
-  const sessionIdRef    = useRef(null);
-
-  useEffect(() => { modeCritiqueRef.current = modeCritique; }, [modeCritique]);
-  useEffect(() => { sessionIdRef.current = sessionId; },      [sessionId]);
-
-  // ─── Init session ─────────────────────────────────────────────────────────
 
   useEffect(() => {
     const initSession = async () => {
@@ -60,73 +53,51 @@ export default function MJ({ session }) {
         .select("id, code")
         .eq("mj_id", session.user.id)
         .maybeSingle();
-
       if (data) {
         setSessionId(data.id);
         setCodeRoom(data.code);
       } else {
-        // Première connexion — crée une session
-        const { data: newSession } = await supabase
-          .from("sessions")
-          .insert([{ mj_id: session.user.id, code: genererCode() }])
-          .select()
-          .single();
-        if (newSession) {
-          setSessionId(newSession.id);
-          setCodeRoom(newSession.code);
-        }
+        creerNouvelleSession();
       }
     };
     initSession();
   }, [session]);
 
-  // ─── Nouvelle partie ──────────────────────────────────────────────────────
-  // ✅ On garde le même id de session (évite les conflits FK)
-  // On vide le contenu et on change juste le code d'accès
-
   const creerNouvelleSession = async () => {
-    const sid = sessionIdRef.current;
-    if (!sid) return;
+    // 1. Supprime juste la session — le CASCADE s'occupe du reste !
+    await supabase.from("sessions").delete().eq("mj_id", session.user.id);
   
-    await Promise.all([
-      supabase.from("lancers").delete().eq("session_id", sid),
-      supabase.from("joueurs").delete().eq("session_id", sid),
-      supabase.from("objets").delete().eq("session_id", sid),
-      supabase.from("offres").delete().eq("session_id", sid),
-      supabase.from("logs_inventaire").delete().eq("session_id", sid),
-      supabase.from("inventaire_global").delete().eq("session_id", sid),
-      supabase.from("personnages").delete().eq("session_id", sid),
-      supabase.from("stats_personnage").delete().eq("session_id", sid),
-      supabase.from("config_stats").delete().eq("session_id", sid),
-    ]);
-  
-    const { data: updated } = await supabase
-      .from("sessions")
-      .update({ code: genererCode() })
-      .eq("id", sid)
-      .select()
-      .single();
-  
-    if (updated) {
-      setCodeRoom(updated.code);
-      setJoueurs([]);
-      setHistory([]);
-      setLastRoll(null);
+    // 2. Crée la nouvelle session
+    let code = genererCode();
+    let ok = false;
+    while (!ok) {
+      const { data: newSession, error } = await supabase
+        .from("sessions")
+        .insert([{ mj_id: session.user.id, code }])
+        .select()
+        .single();
+      if (!error && newSession) {
+        setSessionId(newSession.id);
+        setCodeRoom(newSession.code);
+        setJoueurs([]);
+        setHistory([]);
+        setLastRoll(null);
+        ok = true;
+      } else {
+        code = genererCode();
+      }
     }
-  
     setConfirmReset(false);
   };
-
-  // ─── Supprimer un joueur ──────────────────────────────────────────────────
 
   const supprimerJoueur = async (joueurId) => {
     const joueur = joueurs.find(j => j.id === joueurId);
     setJoueurs((prev) => prev.filter((j) => j.id !== joueurId));
-    if (joueur) await supabase.from("lancers").delete().eq("session_id", sessionId).eq("auteur", joueur.nom);
+    if (joueur) {
+      await supabase.from("lancers").delete().eq("session_id", sessionId).eq("auteur", joueur.nom);
+    }
     await supabase.from("joueurs").delete().eq("id", joueurId);
   };
-
-  // ─── Historique ───────────────────────────────────────────────────────────
 
   const chargerHistorique = useCallback(async (sid, mode) => {
     if (!sid) return;
@@ -137,44 +108,35 @@ export default function MJ({ session }) {
       .order("created_at", { ascending: false })
       .limit(30);
     if (data) {
-      setHistory(data.map((r) => ({
+      const withStatus = data.map((r) => ({
         ...r,
-        status: getStatus(r.valeur, r.bonus, r.total, r.faces, r.seuil, mode),
-      })));
+        status: getStatus(r.valeur, r.bonus, r.total, r.faces, r.seuil, mode)
+      }));
+      setHistory(withStatus);
     }
   }, []);
 
-  // ─── Init joueurs + Realtime arrivées ─────────────────────────────────────
-
   useEffect(() => {
     if (!sessionId) return;
-
     supabase.from("joueurs").select("*").eq("session_id", sessionId)
       .then(({ data }) => { if (data) setJoueurs(data); });
-
-    chargerHistorique(sessionId, modeCritiqueRef.current);
-
-    const channel = supabase
-      .channel(`joueurs-session-${sessionId}`)
+    chargerHistorique(sessionId, modeCritique);
+    const channelJoueurs = supabase
+      .channel("joueurs-session")
       .on("postgres_changes",
         { event: "INSERT", schema: "public", table: "joueurs", filter: `session_id=eq.${sessionId}` },
-        ({ new: joueur }) => setJoueurs((prev) => [...prev, joueur])
+        (payload) => { setJoueurs((prev) => [...prev, payload.new]); }
       ).subscribe();
-
-    return () => supabase.removeChannel(channel);
-  }, [sessionId, chargerHistorique]);
-
-  // ─── Polling historique 500ms ──────────────────────────────────────────────
+    return () => supabase.removeChannel(channelJoueurs);
+  }, [sessionId]);
 
   useEffect(() => {
     if (!sessionId) return;
     const interval = setInterval(() => {
-      chargerHistorique(sessionId, modeCritiqueRef.current);
+      chargerHistorique(sessionId, modeCritique);
     }, 500);
     return () => clearInterval(interval);
-  }, [sessionId, chargerHistorique]);
-
-  // ─── Modifier un joueur ───────────────────────────────────────────────────
+  }, [sessionId, modeCritique, chargerHistorique]);
 
   const updateJoueur = async (joueurId, field, value) => {
     const parsed = parseInt(value) || 0;
@@ -182,39 +144,31 @@ export default function MJ({ session }) {
     await supabase.from("joueurs").update({ [field]: parsed }).eq("id", joueurId);
   };
 
-  // ─── Lancer de dé MJ ──────────────────────────────────────────────────────
-
   const lancerDe = useCallback(async (faces, secret = false) => {
     if (rolling) return;
     setActiveDie(faces);
     setRolling(true);
-
     setTimeout(async () => {
       const valeur = Math.floor(Math.random() * faces) + 1;
       const b = parseInt(bonus) || 0;
       const s = parseInt(seuil) || 0;
       const total = valeur + b;
-      const status = getStatus(valeur, b, total, faces, s, modeCritiqueRef.current);
-
-      const roll = { valeur, bonus: b, total, faces, seuil: s, status, id: `local-${Date.now()}`, secret, auteur: "MJ" };
+      const status = getStatus(valeur, b, total, faces, s, modeCritique);
+      const roll = { valeur, bonus: b, total, faces, seuil: s, status, id: Date.now(), secret, auteur: "MJ" };
       setLastRoll(roll);
       if (!secret) setHistory((prev) => [roll, ...prev].slice(0, 30));
       setRolling(false);
       setActiveDie(null);
-
       if (!secret) {
         await supabase.from("lancers").insert([{
-          valeur, bonus: b, total, faces, seuil: s,
-          session_id: sessionIdRef.current, auteur: "MJ",
+          valeur, bonus: b, total, faces, seuil: s, session_id: sessionId, auteur: "MJ"
         }]);
       }
     }, 400);
-  }, [rolling, bonus, seuil]);
+  }, [rolling, bonus, seuil, modeCritique, sessionId]);
 
   const resultColor = lastRoll?.status ? colors[lastRoll.status.cls] : "#e0e0e0";
   const siteUrl = window.location.origin + "/rejoindre";
-
-  // ─── Rendu ────────────────────────────────────────────────────────────────
 
   return (
     <div style={{ minHeight: "100vh", background: "#1a1a2e", fontFamily: "'Segoe UI', Tahoma, Geneva, Verdana, sans-serif", color: "white" }}>
@@ -232,13 +186,14 @@ export default function MJ({ session }) {
       </div>
 
       <div style={{ maxWidth: 1000, margin: "0 auto", padding: "24px 16px", display: "grid", gridTemplateColumns: "1fr 1fr", gap: 20 }}>
+
+        {/* ── COLONNE GAUCHE ── */}
         <div>
-          {/* Code room */}
+          {/* Code room + QR */}
           <div style={{ background: "#16213e", border: "1px solid #0f3460", borderRadius: 12, padding: 16, marginBottom: 12, textAlign: "center" }}>
             <div style={{ fontSize: 11, color: "#95a5a6", textTransform: "uppercase", letterSpacing: 1, marginBottom: 6 }}>Code de la room</div>
             <div style={{ fontSize: 42, fontWeight: "bold", color: "#e94560", letterSpacing: 8 }}>{codeRoom || "…"}</div>
             <div style={{ fontSize: 11, color: "#555", marginTop: 4 }}>Les joueurs entrent ce code pour rejoindre</div>
-
             {showQR && (
               <div style={{ marginTop: 16 }}>
                 <div style={{ background: "white", display: "inline-block", padding: 12, borderRadius: 8 }}>
@@ -248,18 +203,17 @@ export default function MJ({ session }) {
                 <a href={siteUrl} target="_blank" rel="noreferrer" style={{ color: "#e94560", fontSize: 12, wordBreak: "break-all" }}>{siteUrl}</a>
               </div>
             )}
-
             <div style={{ display: "flex", gap: 8, justifyContent: "center", marginTop: 10 }}>
               <button onClick={() => setShowQR(!showQR)} style={{ background: "#0f3460", color: "white", border: "1px solid #e94560", padding: "6px 14px", borderRadius: 6, cursor: "pointer", fontSize: 12 }}>
                 {showQR ? "Masquer QR" : "📱 Afficher QR"}
               </button>
               {!confirmReset ? (
                 <button onClick={() => setConfirmReset(true)} style={{ background: "transparent", color: "#95a5a6", border: "1px solid #555", padding: "6px 14px", borderRadius: 6, cursor: "pointer", fontSize: 12 }}>
-                  🎲 Nouvelle partie
+                  🔄 Nouvelle session
                 </button>
               ) : (
                 <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-                  <span style={{ fontSize: 11, color: "#e94560" }}>Tout sera effacé — confirmer ?</span>
+                  <span style={{ fontSize: 11, color: "#e94560" }}>Confirmer ?</span>
                   <button onClick={creerNouvelleSession} style={{ background: "#e94560", color: "white", border: "none", padding: "6px 10px", borderRadius: 6, cursor: "pointer", fontSize: 12, fontWeight: "bold" }}>Oui</button>
                   <button onClick={() => setConfirmReset(false)} style={{ background: "#0f3460", color: "white", border: "none", padding: "6px 10px", borderRadius: 6, cursor: "pointer", fontSize: 12 }}>Non</button>
                 </div>
@@ -267,9 +221,12 @@ export default function MJ({ session }) {
             </div>
           </div>
 
-          {/* Bonus / Seuil */}
+          {/* Modificateurs */}
           <div style={{ display: "flex", justifyContent: "space-around", background: "#16213e", border: "1px solid #0f3460", padding: 15, borderRadius: 10, marginBottom: 12 }}>
-            {[{ label: "Mon modificateur", value: bonus, set: setBonus }, { label: "Mon seuil", value: seuil, set: setSeuil }].map(({ label, value, set }) => (
+            {[
+              { label: "Mon modificateur", value: bonus, set: setBonus },
+              { label: "Mon seuil", value: seuil, set: setSeuil },
+            ].map(({ label, value, set }) => (
               <div key={label} style={{ display: "flex", flexDirection: "column", gap: 6, alignItems: "center" }}>
                 <label style={{ fontSize: "0.75rem", textTransform: "uppercase", letterSpacing: 1, color: "#95a5a6" }}>{label}</label>
                 <input type="number" value={value} onChange={(e) => set(e.target.value)}
@@ -279,7 +236,7 @@ export default function MJ({ session }) {
             ))}
           </div>
 
-          {/* Mode critique */}
+          {/* Switch critiques */}
           <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 10, background: "#16213e", border: "1px solid #0f3460", padding: "10px 15px", borderRadius: 10, marginBottom: 12 }}>
             <span style={{ fontSize: "0.75rem", color: "#95a5a6", textTransform: "uppercase", letterSpacing: 1 }}>Critiques :</span>
             {["tous", "d20"].map((mode) => (
@@ -330,8 +287,10 @@ export default function MJ({ session }) {
           <p style={{ color: "#555", fontSize: 11, textAlign: "center", margin: "6px 0 0" }}>Dés secrets — invisibles pour les joueurs</p>
         </div>
 
+        {/* ── COLONNE DROITE ── */}
         <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-          {/* Joueurs */}
+
+          {/* Joueurs connectés */}
           <div>
             <h3 style={{ color: "#95a5a6", fontSize: "0.85rem", textTransform: "uppercase", letterSpacing: 1, marginTop: 0 }}>
               Joueurs connectés ({joueurs.length})
@@ -343,10 +302,11 @@ export default function MJ({ session }) {
             ) : (
               <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                 {joueurs.map((j) => (
-                  <div key={j.id} style={{ background: "#16213e", border: "1px solid #0f3460", borderRadius: 10, padding: "12px 14px", display: "flex", alignItems: "center", gap: 12 }}>
-                    <span style={{ fontWeight: "bold", flex: 1 }}>⚔️ {j.nom}</span>
-                    <button onClick={() => supprimerJoueur(j.id)} style={{ background: "transparent", color: "#e94560", border: "1px solid #e94560", padding: "4px 8px", borderRadius: 4, cursor: "pointer", fontSize: 11 }}>✕</button>
+                  <div key={j.id} style={{ background: "#16213e", border: "1px solid #0f3460", borderRadius: 10, padding: "12px 14px" }}>
+                    {/* Ligne nom + suppr + bonus/seuil */}
                     <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <span style={{ fontWeight: "bold", flex: 1 }}>⚔️ {j.nom}</span>
+                      <button onClick={() => supprimerJoueur(j.id)} style={{ background: "transparent", color: "#e94560", border: "1px solid #e94560", padding: "4px 8px", borderRadius: 4, cursor: "pointer", fontSize: 11 }}>✕</button>
                       <label style={{ fontSize: 11, color: "#95a5a6" }}>Bonus</label>
                       <input type="number" value={j.bonus} onChange={(e) => updateJoueur(j.id, "bonus", e.target.value)}
                         style={{ width: 52, background: "#1a1a2e", border: "1px solid #e94560", color: "white", padding: "4px 6px", borderRadius: 4, textAlign: "center", fontSize: 13, fontWeight: "bold" }}
@@ -355,8 +315,9 @@ export default function MJ({ session }) {
                       <input type="number" value={j.seuil} onChange={(e) => updateJoueur(j.id, "seuil", e.target.value)}
                         style={{ width: 52, background: "#1a1a2e", border: "1px solid #0f3460", color: "white", padding: "4px 6px", borderRadius: 4, textAlign: "center", fontSize: 13, fontWeight: "bold" }}
                       />
-                      <EnvoiObjetMJ sessionId={sessionId} joueur={j} />
                     </div>
+                    {/* ✅ EnvoiObjetMJ en dehors de la ligne inputs */}
+                    <EnvoiObjetMJ sessionId={sessionId} joueur={j} />
                   </div>
                 ))}
               </div>
@@ -366,13 +327,15 @@ export default function MJ({ session }) {
           {/* Historique */}
           <div>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-              <h3 style={{ color: "#95a5a6", fontSize: "0.85rem", textTransform: "uppercase", letterSpacing: 1, margin: 0 }}>Historique de la session</h3>
+              <h3 style={{ color: "#95a5a6", fontSize: "0.85rem", textTransform: "uppercase", letterSpacing: 1, margin: 0 }}>
+                Historique de la session
+              </h3>
               <span style={{ color: "#555", fontSize: 11 }}>↻ auto 500ms</span>
             </div>
-            <div style={{ background: "#16213e", border: "1px solid #0f3460", borderRadius: 10, maxHeight: 400, overflowY: "auto" }}>
+            <div style={{ background: "#16213e", border: "1px solid #0f3460", borderRadius: 10, maxHeight: 300, overflowY: "auto" }}>
               {history.length === 0 && <p style={{ color: "#95a5a6", textAlign: "center", padding: 20, fontSize: 14 }}>Les lancers apparaîtront ici…</p>}
-              {history.map((r, i) => (
-                <div key={r.id ?? i} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 14px", borderBottom: "1px solid #0f3460", opacity: r.secret ? 0.7 : 1 }}>
+              {history.map((r) => (
+                <div key={r.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 14px", borderBottom: "1px solid #0f3460", opacity: r.secret ? 0.7 : 1 }}>
                   <span style={{ color: r.auteur === "MJ" ? "#e94560" : "#95a5a6", fontSize: 12 }}>
                     {r.auteur === "MJ" ? "⚔️ MJ" : `🎲 ${r.auteur}`} · d{r.faces}{r.secret && " 🔒"}
                   </span>
@@ -383,6 +346,7 @@ export default function MJ({ session }) {
             </div>
           </div>
 
+          {/* ✅ Inventaire global */}
           <InventaireGlobal
             sessionId={sessionId}
             joueurNom="MJ"
@@ -390,9 +354,14 @@ export default function MJ({ session }) {
             actif={inventaireGlobalActif}
             onToggle={() => setInventaireGlobalActif(!inventaireGlobalActif)}
           />
+
+          {/* ✅ Logs inventaire */}
           <LogsInventaire sessionId={sessionId} isMJ={true} />
           <ConfigStats sessionId={sessionId} />
+          <FichePersonnage sessionId={sessionId} joueurId={null} joueurNom="MJ" isMJ={true} />
         </div>
+        {/* fin colonne droite */}
+
       </div>
     </div>
   );
