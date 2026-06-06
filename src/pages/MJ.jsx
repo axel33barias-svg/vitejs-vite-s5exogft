@@ -1,7 +1,6 @@
 import { useState, useCallback, useEffect, useRef } from "react";
 import { QRCodeSVG } from "qrcode.react";
 import { supabase } from "../supabase";
-import InventaireJoueur from "./components/InventaireJoueur";
 import InventaireGlobal from "./components/InventaireGlobal";
 import LogsInventaire from "./components/LogsInventaire";
 import EnvoiObjetMJ from "./components/EnvoiObjetMJ";
@@ -46,7 +45,6 @@ export default function MJ({ session }) {
   const [confirmReset, setConfirmReset] = useState(false);
   const [inventaireGlobalActif, setInventaireGlobalActif] = useState(false);
 
-  // Refs pour éviter les closures figées
   const modeCritiqueRef = useRef(modeCritique);
   const sessionIdRef    = useRef(null);
 
@@ -67,51 +65,62 @@ export default function MJ({ session }) {
         setSessionId(data.id);
         setCodeRoom(data.code);
       } else {
-        creerNouvelleSession();
+        // Première connexion — crée une session
+        const { data: newSession } = await supabase
+          .from("sessions")
+          .insert([{ mj_id: session.user.id, code: genererCode() }])
+          .select()
+          .single();
+        if (newSession) {
+          setSessionId(newSession.id);
+          setCodeRoom(newSession.code);
+        }
       }
     };
     initSession();
   }, [session]);
 
+  // ─── Nouvelle partie ──────────────────────────────────────────────────────
+  // ✅ On garde le même id de session (évite les conflits FK)
+  // On vide le contenu et on change juste le code d'accès
+
   const creerNouvelleSession = async () => {
-    const { data: sessionActuelle } = await supabase
+    const sid = sessionIdRef.current;
+    if (!sid) return;
+
+    // 1. Vide tout le contenu lié en parallèle
+    await Promise.all([
+      supabase.from("lancers").delete().eq("session_id", sid),
+      supabase.from("joueurs").delete().eq("session_id", sid),
+      supabase.from("objets").delete().eq("session_id", sid),
+      supabase.from("offres").delete().eq("session_id", sid),
+      supabase.from("logs_inventaire").delete().eq("session_id", sid),
+      supabase.from("inventaire_global").delete().eq("session_id", sid),
+      supabase.from("inventaire_global").delete().eq("session_id", sid),
+      supabase.from("personnages").delete().eq("session_id", sid),     
+      supabase.from("stats_personnage").delete().eq("session_id", sid), 
+      supabase.from("config_stats").delete().eq("session_id", sid),      
+    ]);
+
+    // 2. Met à jour le code — pas de DELETE/INSERT sur sessions
+    const { data: updated } = await supabase
       .from("sessions")
-      .select("id")
-      .eq("mj_id", session.user.id)
-      .maybeSingle();
+      .update({ code: genererCode() })
+      .eq("id", sid)
+      .select()
+      .single();
 
-    if (sessionActuelle) {
-      const sid = sessionActuelle.id;
-      await Promise.all([
-        supabase.from("lancers").delete().eq("session_id", sid),
-        supabase.from("joueurs").delete().eq("session_id", sid),
-        supabase.from("objets").delete().eq("session_id", sid),
-        supabase.from("offres").delete().eq("session_id", sid),
-        supabase.from("logs_inventaire").delete().eq("session_id", sid),
-        supabase.from("inventaire_global").delete().eq("session_id", sid),
-      ]);
-      await supabase.from("sessions").delete().eq("id", sid);
+    if (updated) {
+      setCodeRoom(updated.code);
+      setJoueurs([]);
+      setHistory([]);
+      setLastRoll(null);
     }
 
-    let ok = false;
-    while (!ok) {
-      const code = genererCode();
-      const { data: newSession, error } = await supabase
-        .from("sessions")
-        .insert([{ mj_id: session.user.id, code }])
-        .select()
-        .single();
-      if (!error && newSession) {
-        setSessionId(newSession.id);
-        setCodeRoom(newSession.code);
-        setJoueurs([]);
-        setHistory([]);
-        setLastRoll(null);
-        ok = true;
-      }
-    }
     setConfirmReset(false);
   };
+
+  // ─── Supprimer un joueur ──────────────────────────────────────────────────
 
   const supprimerJoueur = async (joueurId) => {
     const joueur = joueurs.find(j => j.id === joueurId);
@@ -148,7 +157,6 @@ export default function MJ({ session }) {
 
     chargerHistorique(sessionId, modeCritiqueRef.current);
 
-    // ✅ Channel unique par session — évite les conflits si plusieurs onglets MJ
     const channel = supabase
       .channel(`joueurs-session-${sessionId}`)
       .on("postgres_changes",
@@ -159,7 +167,7 @@ export default function MJ({ session }) {
     return () => supabase.removeChannel(channel);
   }, [sessionId, chargerHistorique]);
 
-  // ─── Polling historique 500ms — modeCritique lu via ref ───────────────────
+  // ─── Polling historique 500ms ──────────────────────────────────────────────
 
   useEffect(() => {
     if (!sessionId) return;
@@ -167,9 +175,9 @@ export default function MJ({ session }) {
       chargerHistorique(sessionId, modeCritiqueRef.current);
     }, 500);
     return () => clearInterval(interval);
-  }, [sessionId, chargerHistorique]); // ✅ modeCritique absent — lu via ref
+  }, [sessionId, chargerHistorique]);
 
-  // ─── Actions joueurs ──────────────────────────────────────────────────────
+  // ─── Modifier un joueur ───────────────────────────────────────────────────
 
   const updateJoueur = async (joueurId, field, value) => {
     const parsed = parseInt(value) || 0;
@@ -204,7 +212,7 @@ export default function MJ({ session }) {
         }]);
       }
     }, 400);
-  }, [rolling, bonus, seuil]); // ✅ modeCritique et sessionId lus via ref
+  }, [rolling, bonus, seuil]);
 
   const resultColor = lastRoll?.status ? colors[lastRoll.status.cls] : "#e0e0e0";
   const siteUrl = window.location.origin + "/rejoindre";
@@ -250,11 +258,11 @@ export default function MJ({ session }) {
               </button>
               {!confirmReset ? (
                 <button onClick={() => setConfirmReset(true)} style={{ background: "transparent", color: "#95a5a6", border: "1px solid #555", padding: "6px 14px", borderRadius: 6, cursor: "pointer", fontSize: 12 }}>
-                  🔄 Nouvelle session
+                  🎲 Nouvelle partie
                 </button>
               ) : (
                 <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-                  <span style={{ fontSize: 11, color: "#e94560" }}>Confirmer ?</span>
+                  <span style={{ fontSize: 11, color: "#e94560" }}>Tout sera effacé — confirmer ?</span>
                   <button onClick={creerNouvelleSession} style={{ background: "#e94560", color: "white", border: "none", padding: "6px 10px", borderRadius: 6, cursor: "pointer", fontSize: 12, fontWeight: "bold" }}>Oui</button>
                   <button onClick={() => setConfirmReset(false)} style={{ background: "#0f3460", color: "white", border: "none", padding: "6px 10px", borderRadius: 6, cursor: "pointer", fontSize: 12 }}>Non</button>
                 </div>
@@ -378,7 +386,13 @@ export default function MJ({ session }) {
             </div>
           </div>
 
-          <InventaireGlobal sessionId={sessionId} joueurNom="MJ" isMJ={true} actif={inventaireGlobalActif} onToggle={() => setInventaireGlobalActif(!inventaireGlobalActif)} />
+          <InventaireGlobal
+            sessionId={sessionId}
+            joueurNom="MJ"
+            isMJ={true}
+            actif={inventaireGlobalActif}
+            onToggle={() => setInventaireGlobalActif(!inventaireGlobalActif)}
+          />
           <LogsInventaire sessionId={sessionId} isMJ={true} />
           <ConfigStats sessionId={sessionId} />
           <FichePersonnage sessionId={sessionId} joueurId={null} joueurNom="MJ" isMJ={true} />
