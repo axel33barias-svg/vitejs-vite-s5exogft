@@ -87,8 +87,7 @@ export default function MJ({ session }) {
   const creerNouvelleSession = async () => {
     const sid = sessionIdRef.current;
     if (!sid) return;
-
-    // 1. Vide tout le contenu lié en parallèle
+  
     await Promise.all([
       supabase.from("lancers").delete().eq("session_id", sid),
       supabase.from("joueurs").delete().eq("session_id", sid),
@@ -96,28 +95,25 @@ export default function MJ({ session }) {
       supabase.from("offres").delete().eq("session_id", sid),
       supabase.from("logs_inventaire").delete().eq("session_id", sid),
       supabase.from("inventaire_global").delete().eq("session_id", sid),
-      supabase.from("inventaire_global").delete().eq("session_id", sid),
-      supabase.from("personnages").delete().eq("session_id", sid),     
-      supabase.from("stats_personnage").delete().eq("session_id", sid), 
+      supabase.from("personnages").delete().eq("session_id", sid),
+      supabase.from("stats_personnage").delete().eq("session_id", sid),
       supabase.from("config_stats").delete().eq("session_id", sid),
-      supabase.from("sessions").delete().eq("session_id", sid)      
     ]);
-
-    // 2. Met à jour le code — pas de DELETE/INSERT sur sessions
+  
     const { data: updated } = await supabase
       .from("sessions")
       .update({ code: genererCode() })
       .eq("id", sid)
       .select()
       .single();
-
+  
     if (updated) {
       setCodeRoom(updated.code);
       setJoueurs([]);
       setHistory([]);
       setLastRoll(null);
     }
-
+  
     setConfirmReset(false);
   };
 
@@ -396,7 +392,6 @@ export default function MJ({ session }) {
           />
           <LogsInventaire sessionId={sessionId} isMJ={true} />
           <ConfigStats sessionId={sessionId} />
-          <FichePersonnage sessionId={sessionId} joueurId={null} joueurNom="MJ" isMJ={true} />
         </div>
       </div>
     </div>

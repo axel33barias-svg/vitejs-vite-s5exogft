@@ -72,6 +72,30 @@ export default function FichePersonnage({ sessionId, joueurId, joueurNom, isMJ =
     };
     if (sessionId && (joueurId || isMJ)) charger();
   }, [sessionId, joueurId, isMJ]);
+  // 🔔 Realtime fiche personnage (joueur)
+useEffect(() => {
+  if (!joueurId || !sessionId || isMJ) return;
+
+  const channel = supabase
+    .channel(`fiche-${joueurId}`)
+    .on(
+      "postgres_changes",
+      {
+        event: "UPDATE",
+        schema: "public",
+        table: "personnages",
+
+      },
+      ({ new: updated }) => {
+        setFiche(updated);
+      }
+    )
+    .subscribe();
+
+  return () => {
+    supabase.removeChannel(channel);
+  };
+}, [joueurId, sessionId, isMJ]);
 
   // Initialise les stats quand une classe est choisie
   const choisirClasse = (classe) => {
