@@ -22,6 +22,9 @@ export default function LogsInventaire({ sessionId, isMJ = false }) {
   const [filtre, setFiltre] = useState("tous"); // tous | add | remove | drop | take | steal
 
   const charger = useCallback(async () => {
+    // ✅ GARDE : Ne pas exécuter la requête si sessionId est invalide
+    if (!sessionId) return;
+
     const query = supabase
       .from("logs_inventaire")
       .select("*")

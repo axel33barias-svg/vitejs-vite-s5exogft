@@ -7,6 +7,7 @@ import LogsInventaire from "./components/LogsInventaire";
 import EnvoiObjetMJ from "./components/EnvoiObjetMJ";
 import ConfigStats from "./components/ConfigStats";
 import FichePersonnage from "./components/FichePersonnage";
+import ResetPartie from "./components/ResetPartie";
 
 const FACES = [4, 6, 8, 10, 12, 20, 100];
 
@@ -43,8 +44,8 @@ export default function MJ({ session }) {
   const [codeRoom, setCodeRoom] = useState(null);
   const [showQR, setShowQR] = useState(false);
   const [joueurs, setJoueurs] = useState([]);
-  const [confirmReset, setConfirmReset] = useState(false);
   const [inventaireGlobalActif, setInventaireGlobalActif] = useState(false);
+  const [resetKey, setResetKey] = useState(0);
 
   useEffect(() => {
     const initSession = async () => {
@@ -57,29 +58,13 @@ export default function MJ({ session }) {
         setSessionId(data.id);
         setCodeRoom(data.code);
       } else {
-        creerNouvelleSession();
+        await creerNouvelleSession();
       }
     };
     initSession();
   }, [session]);
 
   const creerNouvelleSession = async () => {
-    const { data: sessionActuelle } = await supabase
-      .from("sessions")
-      .select("id")
-      .eq("mj_id", session.user.id)
-      .maybeSingle();
-
-    if (sessionActuelle) {
-      await supabase.from("lancers").delete().eq("session_id", sessionActuelle.id);
-      await supabase.from("joueurs").delete().eq("session_id", sessionActuelle.id);
-      await supabase.from("objets").delete().eq("session_id", sessionActuelle.id);
-      await supabase.from("offres").delete().eq("session_id", sessionActuelle.id);
-      await supabase.from("logs_inventaire").delete().eq("session_id", sessionActuelle.id);
-      await supabase.from("inventaire_global").delete().eq("session_id", sessionActuelle.id);
-      await supabase.from("sessions").delete().eq("id", sessionActuelle.id);
-    }
-
     let code = genererCode();
     let ok = false;
     while (!ok) {
@@ -99,7 +84,6 @@ export default function MJ({ session }) {
         code = genererCode();
       }
     }
-    setConfirmReset(false);
   };
 
   const supprimerJoueur = async (joueurId) => {
@@ -142,35 +126,29 @@ export default function MJ({ session }) {
     return () => supabase.removeChannel(channelJoueurs);
   }, [sessionId]);
 
-// ✅ NOUVEAU - WebSocket pour l'historique (MJ)
-useEffect(() => {
-  if (!sessionId) return;
+  useEffect(() => {
+    if (!sessionId) return;
+    chargerHistorique(sessionId, modeCritique);
+    const channel = supabase
+      .channel(`lancers-mj-view-${sessionId}`)
+      .on(
+        "postgres_changes",
+        {
+          event: "INSERT",
+          schema: "public",
+          table: "lancers",
+          filter: `session_id=eq.${sessionId}`,
+        },
+        () => {
+          chargerHistorique(sessionId, modeCritique);
+        }
+      )
+      .subscribe();
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [sessionId, modeCritique, chargerHistorique]);
 
-  // Charge l'historique initial une fois
-  chargerHistorique(sessionId, modeCritique);
-
-  // S'abonne aux NOUVEAUX lancers
-  const channel = supabase
-    .channel(`lancers-mj-view-${sessionId}`)
-    .on(
-      "postgres_changes",
-      {
-        event: "INSERT",
-        schema: "public",
-        table: "lancers",
-        filter: `session_id=eq.${sessionId}`,
-      },
-      () => {
-        // Un nouveau lancer arrive, on recharge l'historique
-        chargerHistorique(sessionId, modeCritique);
-      }
-    )
-    .subscribe();
-
-  return () => {
-    supabase.removeChannel(channel);
-  };
-}, [sessionId, modeCritique, chargerHistorique]);
   const updateJoueur = async (joueurId, field, value) => {
     const parsed = parseInt(value) || 0;
     setJoueurs((prev) => prev.map((j) => j.id === joueurId ? { ...j, [field]: parsed } : j));
@@ -203,6 +181,15 @@ useEffect(() => {
   const resultColor = lastRoll?.status ? colors[lastRoll.status.cls] : "#e0e0e0";
   const siteUrl = window.location.origin + "/rejoindre";
 
+  const handleResetComplete = (nouveauCode) => {
+    setResetKey(prev => prev + 1);
+    setCodeRoom(nouveauCode);
+    setJoueurs([]);
+    setHistory([]);
+    setLastRoll(null);
+    chargerHistorique(sessionId, modeCritique);
+  };
+
   return (
     <div style={{ minHeight: "100vh", background: "#1a1a2e", fontFamily: "'Segoe UI', Tahoma, Geneva, Verdana, sans-serif", color: "white" }}>
       <div style={{ background: "#16213e", borderBottom: "1px solid #0f3460", padding: "12px 24px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
@@ -222,7 +209,6 @@ useEffect(() => {
 
         {/* ── COLONNE GAUCHE ── */}
         <div>
-          {/* Code room + QR */}
           <div style={{ background: "#16213e", border: "1px solid #0f3460", borderRadius: 12, padding: 16, marginBottom: 12, textAlign: "center" }}>
             <div style={{ fontSize: 11, color: "#95a5a6", textTransform: "uppercase", letterSpacing: 1, marginBottom: 6 }}>Code de la room</div>
             <div style={{ fontSize: 42, fontWeight: "bold", color: "#e94560", letterSpacing: 8 }}>{codeRoom || "…"}</div>
@@ -240,21 +226,13 @@ useEffect(() => {
               <button onClick={() => setShowQR(!showQR)} style={{ background: "#0f3460", color: "white", border: "1px solid #e94560", padding: "6px 14px", borderRadius: 6, cursor: "pointer", fontSize: 12 }}>
                 {showQR ? "Masquer QR" : "📱 Afficher QR"}
               </button>
-              {!confirmReset ? (
-                <button onClick={() => setConfirmReset(true)} style={{ background: "transparent", color: "#95a5a6", border: "1px solid #555", padding: "6px 14px", borderRadius: 6, cursor: "pointer", fontSize: 12 }}>
-                  🔄 Nouvelle session
-                </button>
-              ) : (
-                <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-                  <span style={{ fontSize: 11, color: "#e94560" }}>Confirmer ?</span>
-                  <button onClick={creerNouvelleSession} style={{ background: "#e94560", color: "white", border: "none", padding: "6px 10px", borderRadius: 6, cursor: "pointer", fontSize: 12, fontWeight: "bold" }}>Oui</button>
-                  <button onClick={() => setConfirmReset(false)} style={{ background: "#0f3460", color: "white", border: "none", padding: "6px 10px", borderRadius: 6, cursor: "pointer", fontSize: 12 }}>Non</button>
-                </div>
-              )}
+              <ResetPartie 
+                sessionId={sessionId}
+                onResetComplete={handleResetComplete}
+              />
             </div>
           </div>
 
-          {/* Modificateurs */}
           <div style={{ display: "flex", justifyContent: "space-around", background: "#16213e", border: "1px solid #0f3460", padding: 15, borderRadius: 10, marginBottom: 12 }}>
             {[
               { label: "Mon modificateur", value: bonus, set: setBonus },
@@ -269,7 +247,6 @@ useEffect(() => {
             ))}
           </div>
 
-          {/* Switch critiques */}
           <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 10, background: "#16213e", border: "1px solid #0f3460", padding: "10px 15px", borderRadius: 10, marginBottom: 12 }}>
             <span style={{ fontSize: "0.75rem", color: "#95a5a6", textTransform: "uppercase", letterSpacing: 1 }}>Critiques :</span>
             {["tous", "d20"].map((mode) => (
@@ -281,7 +258,6 @@ useEffect(() => {
             ))}
           </div>
 
-          {/* Résultat */}
           <div style={{ background: "#16213e", border: "1px solid #0f3460", borderRadius: 12, padding: "1.5rem", textAlign: "center", marginBottom: 12, minHeight: 120, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center" }}>
             <div style={{ fontSize: 52, fontWeight: "bold", lineHeight: 1, color: resultColor, opacity: rolling ? 0.3 : 1, transition: "all 0.3s" }}>
               {rolling ? "…" : (lastRoll ? lastRoll.total : "?")}
@@ -300,7 +276,6 @@ useEffect(() => {
             {!lastRoll && !rolling && <div style={{ color: "#95a5a6", fontSize: 14 }}>Lancez un dé !</div>}
           </div>
 
-          {/* Dés normaux */}
           <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 8, marginBottom: 8 }}>
             {FACES.map((f) => (
               <button key={f} onClick={() => lancerDe(f)} disabled={rolling}
@@ -309,7 +284,6 @@ useEffect(() => {
             ))}
           </div>
 
-          {/* Dés secrets */}
           <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 8 }}>
             {FACES.map((f) => (
               <button key={f} onClick={() => lancerDe(f, true)} disabled={rolling}
@@ -323,7 +297,6 @@ useEffect(() => {
         {/* ── COLONNE DROITE ── */}
         <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
 
-          {/* Joueurs connectés */}
           <div>
             <h3 style={{ color: "#95a5a6", fontSize: "0.85rem", textTransform: "uppercase", letterSpacing: 1, marginTop: 0 }}>
               Joueurs connectés ({joueurs.length})
@@ -336,7 +309,6 @@ useEffect(() => {
               <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                 {joueurs.map((j) => (
                   <div key={j.id} style={{ background: "#16213e", border: "1px solid #0f3460", borderRadius: 10, padding: "12px 14px" }}>
-                    {/* Ligne nom + suppr + bonus/seuil */}
                     <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                       <span style={{ fontWeight: "bold", flex: 1 }}>⚔️ {j.nom}</span>
                       <button onClick={() => supprimerJoueur(j.id)} style={{ background: "transparent", color: "#e94560", border: "1px solid #e94560", padding: "4px 8px", borderRadius: 4, cursor: "pointer", fontSize: 11 }}>✕</button>
@@ -349,7 +321,6 @@ useEffect(() => {
                         style={{ width: 52, background: "#1a1a2e", border: "1px solid #0f3460", color: "white", padding: "4px 6px", borderRadius: 4, textAlign: "center", fontSize: 13, fontWeight: "bold" }}
                       />
                     </div>
-                    {/* ✅ EnvoiObjetMJ en dehors de la ligne inputs */}
                     <EnvoiObjetMJ sessionId={sessionId} joueur={j} />
                   </div>
                 ))}
@@ -357,7 +328,6 @@ useEffect(() => {
             )}
           </div>
 
-          {/* Historique */}
           <div>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
               <h3 style={{ color: "#95a5a6", fontSize: "0.85rem", textTransform: "uppercase", letterSpacing: 1, margin: 0 }}>
@@ -379,23 +349,19 @@ useEffect(() => {
             </div>
           </div>
 
-          {/* ✅ Inventaire global */}
-          <InventaireGlobal
-            sessionId={sessionId}
-            joueurNom="MJ"
-            isMJ={true}
-            actif={inventaireGlobalActif}
-            onToggle={() => setInventaireGlobalActif(!inventaireGlobalActif)}
-          />
+          {sessionId && <InventaireGlobal
+          key={resetKey}
+          sessionId={sessionId}
+          joueurNom="MJ"
+          isMJ={true}
+          actif={inventaireGlobalActif}
+          onToggle={() => setInventaireGlobalActif(!inventaireGlobalActif)}
+         />}
 
-          {/* ✅ Logs inventaire */}
-          <LogsInventaire sessionId={sessionId} isMJ={true} />
-          <ConfigStats sessionId={sessionId} />
-          <FichePersonnage sessionId={sessionId} joueurId={null} joueurNom="MJ" isMJ={true} />
-
+         {sessionId && <LogsInventaire sessionId={sessionId} isMJ={true} />}
+         {sessionId && <ConfigStats key={resetKey} sessionId={sessionId} />}
+         {sessionId && <FichePersonnage key={resetKey} sessionId={sessionId} joueurId={null} joueurNom="MJ" isMJ={true} />}
         </div>
-        {/* fin colonne droite */}
-
       </div>
     </div>
   );

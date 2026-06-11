@@ -23,6 +23,9 @@ export default function ConfigStats({ sessionId }) {
 
   useEffect(() => {
     const charger = async () => {
+      // ✅ GARDE : Ne pas exécuter si sessionId est invalide
+      if (!sessionId) return;
+
       // Charge ou crée la config stats
       let { data } = await supabase
         .from("config_stats")
@@ -48,7 +51,8 @@ export default function ConfigStats({ sessionId }) {
         .single();
       if (sess?.seuils) setSeuils(sess.seuils);
     };
-    if (sessionId) charger();
+    
+    charger();
   }, [sessionId]);
 
   const updateConfig = (field, value) => {
@@ -60,6 +64,8 @@ export default function ConfigStats({ sessionId }) {
   };
 
   const sauvegarder = async () => {
+    if (!sessionId) return;
+    
     setSaving(true);
     await supabase.from("config_stats").update(config).eq("session_id", sessionId);
     await supabase.from("sessions").update({ seuils }).eq("id", sessionId);
@@ -134,6 +140,8 @@ export default function ConfigStats({ sessionId }) {
 
 // Export de la config pour les autres composants
 export async function getConfigStats(sessionId) {
+  if (!sessionId) return null; // ✅ GARDE
+  
   const { data } = await supabase
     .from("config_stats")
     .select("*")
@@ -143,6 +151,8 @@ export async function getConfigStats(sessionId) {
 }
 
 export async function getSeuils(sessionId) {
+  if (!sessionId) return {}; // ✅ GARDE
+  
   const { data } = await supabase
     .from("sessions")
     .select("seuils")

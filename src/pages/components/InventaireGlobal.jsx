@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { supabase } from "../../supabase";
 import { logAction } from "./InventaireJoueur";
 
@@ -15,58 +15,96 @@ import { logAction } from "./InventaireJoueur";
 
 export default function InventaireGlobal({ sessionId, joueurId, joueurNom, isMJ = false, actif = false, onToggle }) {
   const [objets, setObjets] = useState([]);
-  const [confirmerVol, setConfirmerVol] = useState(null); // objet en cours de vol
-  const [confirmerPrise, setConfirmerPrise] = useState(null); // objet en cours de prise
-
-  // Charge l'inventaire global
-  const charger = useCallback(async () => {
-    const { data } = await supabase
-      .from("inventaire_global")
-      .select("*")
-      .eq("session_id", sessionId)
-      .order("created_at", { ascending: true });
-    if (data) setObjets(data);
-  }, [sessionId]);
-
-// ✅ NOUVEAU - WebSocket pour l'inventaire global
-useEffect(() => {
-  if (!sessionId) return;
-  if (!actif && !isMJ) return;
-
-  // Charge une fois au début
-  charger();
-
-  // Canal pour le butin commun
-  const channel = supabase
-    .channel(`inventaire-global-${sessionId}`)
-    .on(
-      "postgres_changes",
-      {
-        event: "*", // INSERT, UPDATE, DELETE
-        schema: "public",
-        table: "inventaire_global",
-        filter: `session_id=eq.${sessionId}`,
-      },
-      () => {
-        // Un changement dans le butin → recharge
-        charger();
-      }
-    )
-    .subscribe();
-
-  return () => {
-    supabase.removeChannel(channel);
-  };
-}, [sessionId, actif, isMJ, charger]);
-
-  // MJ — ajouter un objet directement dans le global
+  const [confirmerVol, setConfirmerVol] = useState(null);
+  const [confirmerPrise, setConfirmerPrise] = useState(null);
   const [showForm, setShowForm] = useState(false);
   const [newNom, setNewNom] = useState("");
   const [newDesc, setNewDesc] = useState("");
   const [newQte, setNewQte] = useState(1);
   const [newIcon, setNewIcon] = useState("📦");
+  
   const ICONS = ["📦", "⚔️", "🛡️", "🧪", "💰", "🗝️", "📜", "🏹", "🔮", "💎", "🍖", "🧲"];
+  
+  // Ref pour suivre l'état du channel
+  const channelRef = useRef(null);
+  const isMountedRef = useRef(true);
 
+  // Charge l'inventaire global
+  const charger = useCallback(async () => {
+    if (!sessionId) return;
+    const { data } = await supabase
+      .from("inventaire_global")
+      .select("*")
+      .eq("session_id", sessionId)
+      .order("created_at", { ascending: true });
+    if (data && isMountedRef.current) setObjets(data);
+  }, [sessionId]);
+
+  // ✅ WebSocket pour l'inventaire global - VERSION CORRIGÉE
+  useEffect(() => {
+    isMountedRef.current = true;
+    
+    if (!sessionId) return;
+    if (!actif && !isMJ) return;
+
+    // Charge une fois au début
+    charger();
+
+    // Nettoyer l'ancien channel s'il existe
+    const cleanupOldChannel = async () => {
+      if (channelRef.current) {
+        try {
+          await supabase.removeChannel(channelRef.current);
+        } catch (err) {
+          console.warn("Erreur nettoyage channel:", err);
+        }
+        channelRef.current = null;
+      }
+    };
+
+    // Créer le nouveau channel
+    const setupChannel = async () => {
+      await cleanupOldChannel();
+      
+      if (!isMountedRef.current) return;
+      
+      const newChannel = supabase.channel(`inventaire-global-${sessionId}`);
+      channelRef.current = newChannel;
+      
+      newChannel
+        .on(
+          "postgres_changes",
+          {
+            event: "*",
+            schema: "public",
+            table: "inventaire_global",
+            filter: `session_id=eq.${sessionId}`,
+          },
+          () => {
+            if (isMountedRef.current) {
+              charger();
+            }
+          }
+        )
+        .subscribe((status) => {
+          if (status === "SUBSCRIBED") {
+            console.log("✅ Channel inventaire-global subscribed:", sessionId);
+          }
+        });
+    };
+
+    setupChannel();
+
+    return () => {
+      isMountedRef.current = false;
+      if (channelRef.current) {
+        supabase.removeChannel(channelRef.current).catch(console.warn);
+        channelRef.current = null;
+      }
+    };
+  }, [sessionId, actif, isMJ, charger]);
+
+  // MJ — ajouter un objet directement dans le global
   const ajouterObjetMJ = async () => {
     if (!newNom.trim()) return;
     const { data } = await supabase
@@ -109,7 +147,6 @@ useEffect(() => {
     setConfirmerVol(null);
 
     if (resultat === "critique_succes") {
-      // Transfert silencieux
       await supabase.from("inventaire_global").delete().eq("id", objet.id);
       await supabase.from("objets").insert([{
         session_id: sessionId, joueur_id: joueurId,
@@ -118,7 +155,7 @@ useEffect(() => {
       }]);
       await logAction(sessionId, "steal", joueurNom, objet.nom,
         `${joueurNom} a volé "${objet.nom}" (réussite critique — discret)`,
-        false // invisible pour les autres joueurs
+        false
       );
       setObjets((prev) => prev.filter((o) => o.id !== objet.id));
 
@@ -136,7 +173,6 @@ useEffect(() => {
       setObjets((prev) => prev.filter((o) => o.id !== objet.id));
 
     } else if (resultat === "echec_critique") {
-      // Rien ne bouge — notification publique
       await logAction(sessionId, "steal", joueurNom, objet.nom,
         `🚨 ${joueurNom} a tenté de voler "${objet.nom}" et s'est fait prendre !`,
         true
