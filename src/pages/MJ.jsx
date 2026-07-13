@@ -10,8 +10,12 @@ import FichePersonnage from "./components/FichePersonnage";
 const FACES = [4, 6, 8, 10, 12, 20, 100];
 
 function genererCode() {
-  const lettres = "ABCDEFGHJKLMNPQRSTUVWXYZ";
-  return Array.from({ length: 4 }, () => lettres[Math.floor(Math.random() * lettres.length)]).join("");
+  const lettres = "ABCDEFGHJKLMNPQRSTUVWXYZ123456789";
+  let code = "";
+  for (let i = 0; i < 4; i++) {
+    code += lettres[Math.floor(Math.random() * lettres.length)];
+  }
+  return code;
 }
 
 function getStatus(valeur, bonus, total, faces, seuil, modeCritique) {
@@ -56,25 +60,41 @@ export default function MJ({ session }) {
   const [showConfigPopup, setShowConfigPopup] = useState(false);
   const [configAlreadyShown, setConfigAlreadyShown] = useState(false);
   const [joueurInfo, setJoueurInfo] = useState(null);
+  const [showAllHistory, setShowAllHistory] = useState(false);
 
+  // 🔥 FIX - INITIALISATION DE LA SESSION AVEC GESTION D'ERREUR 409
   useEffect(() => {
     const initSession = async () => {
-      const { data } = await supabase
-        .from("sessions")
-        .select("id, code")
-        .eq("mj_id", session.user.id)
-        .maybeSingle();
-      if (data) {
-        setSessionId(data.id);
-        setCodeRoom(data.code);
-      } else {
-        creerNouvelleSession();
+      try {
+        const { data, error } = await supabase
+          .from("sessions")
+          .select("id, code")
+          .eq("mj_id", session.user.id)
+          .maybeSingle();
+        
+        if (error) {
+          console.error("Erreur lors de la récupération de la session:", error);
+          if (error.code === '409') {
+            console.log("Conflit détecté, création d'une nouvelle session...");
+            await creerNouvelleSession();
+          }
+          return;
+        }
+        
+        if (data) {
+          setSessionId(data.id);
+          setCodeRoom(data.code);
+        } else {
+          await creerNouvelleSession();
+        }
+      } catch (err) {
+        console.error("Erreur initSession:", err);
       }
     };
     initSession();
   }, [session]);
 
-  // 🔥 Popup de config : une seule fois par session (stocké dans localStorage)
+  // Popup de config : une seule fois par session (stocké dans localStorage)
   useEffect(() => {
     if (sessionId && !configAlreadyShown) {
       const alreadyShown = localStorage.getItem(`config_shown_${sessionId}`);
@@ -92,46 +112,100 @@ export default function MJ({ session }) {
     }
   }, [sessionId, configAlreadyShown]);
 
+  // 🔥 FIX - CREER NOUVELLE SESSION AVEC GESTION DES TENTATIVES
   const creerNouvelleSession = async () => {
-    const { data: sessionActuelle } = await supabase
-      .from("sessions")
-      .select("id")
-      .eq("mj_id", session.user.id)
-      .maybeSingle();
-
-    if (sessionActuelle) {
-      await supabase.from("lancers").delete().eq("session_id", sessionActuelle.id);
-      await supabase.from("joueurs").delete().eq("session_id", sessionActuelle.id);
-      await supabase.from("objets").delete().eq("session_id", sessionActuelle.id);
-      await supabase.from("offres").delete().eq("session_id", sessionActuelle.id);
-      await supabase.from("logs_inventaire").delete().eq("session_id", sessionActuelle.id);
-      await supabase.from("inventaire_global").delete().eq("session_id", sessionActuelle.id);
-      await supabase.from("sessions").delete().eq("id", sessionActuelle.id);
-    }
-
-    let code = genererCode();
-    let ok = false;
-    while (!ok) {
-      const { data: newSession, error } = await supabase
+    try {
+      // 1. Supprimer l'ancienne session si elle existe
+      const { data: sessionActuelle } = await supabase
         .from("sessions")
-        .insert([{ mj_id: session.user.id, code }])
-        .select()
-        .single();
-      if (!error && newSession) {
-        setSessionId(newSession.id);
-        setCodeRoom(newSession.code);
-        setJoueurs([]);
-        setHistory([]);
-        setLastRoll(null);
-        // 🔥 Réinitialiser le flag localStorage pour la nouvelle session
-        localStorage.removeItem(`config_shown_${newSession.id}`);
-        setConfigAlreadyShown(false);
-        ok = true;
-      } else {
-        code = genererCode();
+        .select("id")
+        .eq("mj_id", session.user.id)
+        .maybeSingle();
+
+        if (sessionActuelle) {
+          await supabase.from("lancers").delete().eq("session_id", sessionActuelle.id);
+          await supabase.from("stats_personnage").delete().eq("session_id", sessionActuelle.id);
+          await supabase.from("personnages").delete().eq("session_id", sessionActuelle.id);
+          await supabase.from("objets").delete().eq("session_id", sessionActuelle.id);
+          await supabase.from("joueurs").delete().eq("session_id", sessionActuelle.id);
+          await supabase.from("offres").delete().eq("session_id", sessionActuelle.id);
+          await supabase.from("logs_inventaire").delete().eq("session_id", sessionActuelle.id);
+          await supabase.from("inventaire_global").delete().eq("session_id", sessionActuelle.id);
+        
+          const { error: deleteError } = await supabase
+            .from("sessions")
+            .delete()
+            .eq("id", sessionActuelle.id);
+        
+          if (deleteError) {
+            console.error("❌ Suppression session bloquée:", deleteError);
+            return;
+          }
+        }
+
+      // 2. Générer un code unique
+      let code = genererCode();
+      let ok = false;
+      let tentative = 0;
+      const maxTentatives = 10;
+
+      while (!ok && tentative < maxTentatives) {
+        tentative++;
+        console.log(`Tentative ${tentative} de création de session avec code:`, code);
+        
+        const { data: newSession, error } = await supabase
+          .from("sessions")
+          .insert([{ mj_id: session.user.id, code }])
+          .select()
+          .single();
+        
+        if (!error && newSession) {
+          console.log("✅ Session créée avec succès:", newSession.id);
+          setSessionId(newSession.id);
+          setCodeRoom(newSession.code);
+          setJoueurs([]);
+          setHistory([]);
+          setLastRoll(null);
+          setHistoriqueUnifie([]);
+          localStorage.removeItem(`config_shown_${newSession.id}`);
+          setConfigAlreadyShown(false);
+          setInventaireGlobalActif(false);
+          ok = true;
+        } else if (error?.code === '409') {
+          console.warn("⚠️ Conflit sur le code, génération d'un nouveau code...");
+          code = genererCode();
+        } else if (error) {
+          console.error("❌ Erreur lors de la création:", error);
+          code = genererCode();
+        }
       }
+
+      if (!ok) {
+        console.error("❌ Impossible de créer une session après", maxTentatives, "tentatives");
+        const codeFinal = genererCode() + Math.floor(Math.random() * 100);
+        const { data: newSession, error } = await supabase
+          .from("sessions")
+          .insert([{ mj_id: session.user.id, code: codeFinal }])
+          .select()
+          .single();
+        if (!error && newSession) {
+          console.log("✅ Session créée avec code final:", codeFinal);
+          setSessionId(newSession.id);
+          setCodeRoom(newSession.code);
+          setJoueurs([]);
+          setHistory([]);
+          setLastRoll(null);
+          setHistoriqueUnifie([]);
+          localStorage.removeItem(`config_shown_${newSession.id}`);
+          setConfigAlreadyShown(false);
+          setInventaireGlobalActif(false);
+        }
+      }
+      setConfirmReset(false);
+    } catch (err) {
+      console.error("❌ Erreur dans creerNouvelleSession:", err);
+      setConfirmReset(false);
     }
-    setConfirmReset(false);
   };
 
   const supprimerJoueur = async (joueurId) => {
@@ -171,24 +245,77 @@ export default function MJ({ session }) {
     setHistoriqueUnifie(avecType);
   }, []);
 
+  // 🔥 FIX - Charger les joueurs avec leur statut depuis personnages
   useEffect(() => {
     if (!sessionId) return;
-  
-    supabase.from("joueurs").select("*").eq("session_id", sessionId)
-      .then(({ data }) => { if (data) setJoueurs(data); });
-  
+
+    const chargerJoueursAvecStatut = async () => {
+      const { data: joueursData } = await supabase
+        .from("joueurs")
+        .select("*")
+        .eq("session_id", sessionId);
+
+      if (joueursData) {
+        const joueursAvecStatut = await Promise.all(
+          joueursData.map(async (joueur) => {
+            const { data: personnage } = await supabase
+              .from("personnages")
+              .select("statut")
+              .eq("joueur_id", joueur.id)
+              .eq("session_id", sessionId)
+              .maybeSingle();
+            
+            return {
+              ...joueur,
+              statut: personnage?.statut || null
+            };
+          })
+        );
+        setJoueurs(joueursAvecStatut);
+      }
+    };
+
+    chargerJoueursAvecStatut();
     chargerHistoriqueUnifie(sessionId);
-  
+
     const channelJoueurs = supabase
       .channel("joueurs-session")
       .on("postgres_changes",
         { event: "INSERT", schema: "public", table: "joueurs", filter: `session_id=eq.${sessionId}` },
-        (payload) => { setJoueurs((prev) => [...prev, payload.new]); }
+        async (payload) => {
+          const { data: personnage } = await supabase
+            .from("personnages")
+            .select("statut")
+            .eq("joueur_id", payload.new.id)
+            .eq("session_id", sessionId)
+            .maybeSingle();
+          
+          setJoueurs((prev) => [...prev, { ...payload.new, statut: personnage?.statut || null }]);
+        }
       ).subscribe();
-  
-    return () => supabase.removeChannel(channelJoueurs);
+
+    const channelStatut = supabase
+      .channel("statut-joueurs")
+      .on("postgres_changes",
+        { event: "UPDATE", schema: "public", table: "personnages", filter: `session_id=eq.${sessionId}` },
+        async (payload) => {
+          setJoueurs((prev) => 
+            prev.map((j) => 
+              j.id === payload.new.joueur_id 
+                ? { ...j, statut: payload.new.statut }
+                : j
+            )
+          );
+        }
+      ).subscribe();
+
+    return () => {
+      supabase.removeChannel(channelJoueurs);
+      supabase.removeChannel(channelStatut);
+    };
   }, [sessionId]);
 
+  // WebSocket pour l'historique UNIFIÉ
   useEffect(() => {
     if (!sessionId) return;
 
@@ -292,27 +419,46 @@ export default function MJ({ session }) {
   return (
     <div style={{ minHeight: "100vh", background: "#1a1a2e", fontFamily: "'Segoe UI', Tahoma, Geneva, Verdana, sans-serif", color: "white" }}>
       <div style={{ background: "#16213e", borderBottom: "1px solid #0f3460", padding: "12px 24px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-          <h1 style={{ margin: 0, color: "#e94560", fontSize: "1.3rem" }}>⚔️ Espace MJ</h1>
-          <button 
-            onClick={() => setShowConfigPopup(true)} 
-            style={{ 
-              background: "#0f3460", 
-              color: "#95a5a6", 
-              border: "1px solid #e94560", 
-              padding: "4px 12px", 
-              borderRadius: 6, 
-              cursor: "pointer", 
-              fontSize: 12,
-              fontWeight: "bold",
-              transition: "all 0.2s"
-            }}
-            onMouseEnter={(e) => { e.currentTarget.style.background = "#e94560"; e.currentTarget.style.color = "white"; }}
-            onMouseLeave={(e) => { e.currentTarget.style.background = "#0f3460"; e.currentTarget.style.color = "#95a5a6"; }}
-          >
-            ⚙️ Réglages
-          </button>
-        </div>
+      <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+  <h1 style={{ margin: 0, color: "#e94560", fontSize: "1.3rem" }}>⚔️ Espace MJ</h1>
+  <button 
+    onClick={() => setShowConfigPopup(true)} 
+    style={{ 
+      background: "#0f3460", 
+      color: "#95a5a6", 
+      border: "1px solid #e94560", 
+      padding: "4px 12px", 
+      borderRadius: 6, 
+      cursor: "pointer", 
+      fontSize: 12,
+      fontWeight: "bold",
+      transition: "all 0.2s"
+    }}
+    onMouseEnter={(e) => { e.currentTarget.style.background = "#e94560"; e.currentTarget.style.color = "white"; }}
+    onMouseLeave={(e) => { e.currentTarget.style.background = "#0f3460"; e.currentTarget.style.color = "#95a5a6"; }}
+  >
+    ⚙️ Réglages
+  </button>
+  {/* 🔥 NOUVEAU BOUTON COMBAT */}
+  <button 
+    onClick={() => setShowCombat(true)} 
+    style={{ 
+      background: "#8b0000", 
+      color: "white", 
+      border: "2px solid #ff0000", 
+      padding: "4px 14px", 
+      borderRadius: 6, 
+      cursor: "pointer", 
+      fontSize: 12,
+      fontWeight: "bold",
+      transition: "all 0.2s",
+    }}
+    onMouseEnter={(e) => { e.currentTarget.style.background = "#ff0000"; e.currentTarget.style.transform = "scale(1.05)"; }}
+    onMouseLeave={(e) => { e.currentTarget.style.background = "#8b0000"; e.currentTarget.style.transform = "scale(1)"; }}
+  >
+    ⚔️ Combat
+  </button>
+</div>
         <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
           <span style={{ color: "#95a5a6", fontSize: 13 }}>{session.user.email}</span>
           <button onClick={() => setShowQR(!showQR)} style={{ background: "#0f3460", color: "white", border: "1px solid #e94560", padding: "6px 14px", borderRadius: 6, cursor: "pointer", fontWeight: "bold", fontSize: 13 }}>
@@ -423,89 +569,129 @@ export default function MJ({ session }) {
         {/* ── COLONNE DROITE ── */}
         <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
 
-          {/* Joueurs connectés - 🔥 Filtrés pour ne montrer que ceux en attente */}
+          {/* 🔥 MODIFICATION 1 : Afficher TOUS les joueurs avec leur statut */}
           <div>
             <h3 style={{ color: "#95a5a6", fontSize: "0.85rem", textTransform: "uppercase", letterSpacing: 1, marginTop: 0 }}>
-              Joueurs en attente ({joueurs.filter(j => j.statut !== "approuve").length})
+              Joueurs ({joueurs.length})
             </h3>
-            {joueurs.filter(j => j.statut !== "approuve").length === 0 ? (
+            {joueurs.length === 0 ? (
               <div style={{ background: "#16213e", border: "1px solid #0f3460", borderRadius: 10, padding: 20, textAlign: "center", color: "#95a5a6", fontSize: 14 }}>
-                Aucun joueur en attente
+                En attente de joueurs…
               </div>
             ) : (
               <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                {joueurs
-                  .filter(j => j.statut !== "approuve")
-                  .map((j) => (
-                    <div key={j.id} style={{ background: "#16213e", border: "1px solid #0f3460", borderRadius: 10, padding: "12px 14px" }}>
-                      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                        <span style={{ fontWeight: "bold", flex: 1 }}>⚔️ {j.nom}</span>
-                        <button 
-                          onClick={async (e) => {
-                            const rect = e.currentTarget.getBoundingClientRect();
-                            const infos = await getJoueurInfos(j.id);
-                            setJoueurInfo({
-                              joueurId: j.id,
-                              nom: j.nom,
-                              x: rect.left,
-                              y: rect.bottom + 8,
-                              data: infos,
-                            });
-                          }}
-                          style={{ 
-                            background: "transparent", 
-                            color: "#3498db", 
-                            border: "1px solid #3498db", 
-                            padding: "2px 6px", 
-                            borderRadius: 4, 
-                            cursor: "pointer", 
-                            fontSize: 11,
-                            fontWeight: "bold",
-                          }}
-                          title="Voir les infos du joueur"
-                        >
-                          ℹ️
-                        </button>
-                        <button onClick={() => supprimerJoueur(j.id)} style={{ background: "transparent", color: "#e94560", border: "1px solid #e94560", padding: "4px 8px", borderRadius: 4, cursor: "pointer", fontSize: 11 }}>✕</button>
-                        <label style={{ fontSize: 11, color: "#95a5a6" }}>Bonus</label>
-                        <input type="number" value={j.bonus} onChange={(e) => updateJoueur(j.id, "bonus", e.target.value)}
-                          style={{ width: 52, background: "#1a1a2e", border: "1px solid #e94560", color: "white", padding: "4px 6px", borderRadius: 4, textAlign: "center", fontSize: 13, fontWeight: "bold" }}
-                        />
-                        <label style={{ fontSize: 11, color: "#95a5a6" }}>Seuil</label>
-                        <input type="number" value={j.seuil} onChange={(e) => updateJoueur(j.id, "seuil", e.target.value)}
-                          style={{ width: 52, background: "#1a1a2e", border: "1px solid #0f3460", color: "white", padding: "4px 6px", borderRadius: 4, textAlign: "center", fontSize: 13, fontWeight: "bold" }}
-                        />
-                      </div>
-                      <EnvoiObjetMJ sessionId={sessionId} joueur={j} />
+                {joueurs.map((j) => (
+                  <div key={j.id} style={{ 
+                    background: "#16213e", 
+                    border: `1px solid ${j.statut === "approuve" ? "#4ee44e" : j.statut === "en_attente" ? "#f1c40f" : j.statut === "rejete" ? "#e94560" : "#0f3460"}`,
+                    borderRadius: 10, 
+                    padding: "12px 14px" 
+                  }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <span style={{ fontWeight: "bold", flex: 1 }}>
+                        ⚔️ {j.nom}
+                        {j.statut === "approuve" && <span style={{ color: "#4ee44e", fontSize: 11, marginLeft: 8 }}>✅ Approuvé</span>}
+                        {j.statut === "en_attente" && <span style={{ color: "#f1c40f", fontSize: 11, marginLeft: 8 }}>⏳ En attente</span>}
+                        {j.statut === "rejete" && <span style={{ color: "#e94560", fontSize: 11, marginLeft: 8 }}>❌ Refusé</span>}
+                        {!j.statut && <span style={{ color: "#555", fontSize: 11, marginLeft: 8 }}>📝 Pas de fiche</span>}
+                      </span>
+                      <button 
+                        onClick={async (e) => {
+                          const rect = e.currentTarget.getBoundingClientRect();
+                          const infos = await getJoueurInfos(j.id);
+                          setJoueurInfo({
+                            joueurId: j.id,
+                            nom: j.nom,
+                            x: rect.left,
+                            y: rect.bottom + 8,
+                            data: infos,
+                          });
+                        }}
+                        style={{ 
+                          background: "transparent", 
+                          color: "#3498db", 
+                          border: "1px solid #3498db", 
+                          padding: "2px 6px", 
+                          borderRadius: 4, 
+                          cursor: "pointer", 
+                          fontSize: 11,
+                          fontWeight: "bold",
+                        }}
+                        title="Voir les infos du joueur"
+                      >
+                        ℹ️
+                      </button>
+                      <button onClick={() => supprimerJoueur(j.id)} style={{ background: "transparent", color: "#e94560", border: "1px solid #e94560", padding: "4px 8px", borderRadius: 4, cursor: "pointer", fontSize: 11 }}>✕</button>
+                      <label style={{ fontSize: 11, color: "#95a5a6" }}>Bonus</label>
+                      <input type="number" value={j.bonus} onChange={(e) => updateJoueur(j.id, "bonus", e.target.value)}
+                        style={{ width: 52, background: "#1a1a2e", border: "1px solid #e94560", color: "white", padding: "4px 6px", borderRadius: 4, textAlign: "center", fontSize: 13, fontWeight: "bold" }}
+                      />
+                      <label style={{ fontSize: 11, color: "#95a5a6" }}>Seuil</label>
+                      <input type="number" value={j.seuil} onChange={(e) => updateJoueur(j.id, "seuil", e.target.value)}
+                        style={{ width: 52, background: "#1a1a2e", border: "1px solid #0f3460", color: "white", padding: "4px 6px", borderRadius: 4, textAlign: "center", fontSize: 13, fontWeight: "bold" }}
+                      />
                     </div>
-                  ))}
+                    <EnvoiObjetMJ sessionId={sessionId} joueur={j} />
+                  </div>
+                ))}
               </div>
             )}
           </div>
 
-          {/* Historique UNIFIÉ */}
-          <div>
+                    {/* Historique UNIFIÉ avec affichage limité à 5 + bouton "Voir plus" */}
+                    <div>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
               <h3 style={{ color: "#95a5a6", fontSize: "0.85rem", textTransform: "uppercase", letterSpacing: 1, margin: 0 }}>
                 📜 Historique unifié (lancers + inventaire)
               </h3>
-              <span style={{ color: "#555", fontSize: 11 }}>50 derniers événements</span>
+              <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                <span style={{ color: "#555", fontSize: 11 }}>
+                  {historiqueUnifie.length > 5 ? `5/${historiqueUnifie.length}` : `${historiqueUnifie.length} actions`}
+                </span>
+                {historiqueUnifie.length > 5 && (
+                  <button
+                    onClick={() => setShowAllHistory(true)}
+                    style={{
+                      background: "#0f3460",
+                      color: "#95a5a6",
+                      border: "1px solid #e94560",
+                      padding: "4px 10px",
+                      borderRadius: 6,
+                      cursor: "pointer",
+                      fontSize: 11,
+                      fontWeight: "bold",
+                      transition: "all 0.2s",
+                    }}
+                    onMouseEnter={(e) => { e.currentTarget.style.background = "#e94560"; e.currentTarget.style.color = "white"; }}
+                    onMouseLeave={(e) => { e.currentTarget.style.background = "#0f3460"; e.currentTarget.style.color = "#95a5a6"; }}
+                  >
+                    Voir plus (+{historiqueUnifie.length - 5})
+                  </button>
+                )}
+              </div>
             </div>
-            <div style={{ background: "#16213e", border: "1px solid #0f3460", borderRadius: 10, maxHeight: 400, overflowY: "auto" }}>
+            <div style={{ background: "#16213e", border: "1px solid #0f3460", borderRadius: 10, maxHeight: 300, overflowY: "auto" }}>
               {historiqueUnifie.length === 0 && (
                 <p style={{ color: "#95a5a6", textAlign: "center", padding: 20, fontSize: 14 }}>
                   Aucune activité pour le moment
                 </p>
               )}
-              {historiqueUnifie.map((item) => {
+              {historiqueUnifie.slice(0, 5).map((item) => {
                 if (item.type === 'lancer') {
                   const status = getStatus(item.valeur, item.bonus, item.total, item.faces, item.seuil, modeCritique);
+                  const nomCompetence = item.action_nom || "";
+                  
                   return (
                     <div key={item.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 14px", borderBottom: "1px solid #0f3460", opacity: item.secret ? 0.5 : 1 }}>
                       <span style={{ color: item.auteur === "MJ" ? "#e94560" : "#95a5a6", fontSize: 12 }}>
-                        {item.auteur === "MJ" ? "⚔️ MJ" : `🎲 ${item.auteur}`} · d{item.faces}{item.secret && " 🔒"}
+                        {item.auteur === "MJ" ? "⚔️ MJ" : `🎲 ${item.auteur}`}
+                        {nomCompetence && <span style={{ color: "#f1c40f", fontWeight: "bold" }}> a utilisé {nomCompetence}</span>}
+                        {!nomCompetence && <span> a lancé un d{item.faces}</span>}
+                        {item.secret && " 🔒"}
                       </span>
-                      <span style={{ fontWeight: "bold", fontSize: 16 }}>{item.total}</span>
+                      <span style={{ fontWeight: "bold", fontSize: 16, color: status ? colors[status.cls] : "#e0e0e0" }}>
+                        {item.total}
+                      </span>
                       {status && <span style={{ color: colors[status.cls], fontSize: 11 }}>{status.label}</span>}
                       <span style={{ color: "#555", fontSize: 10 }}>
                         {new Date(item.created_at).toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" })}
@@ -529,9 +715,30 @@ export default function MJ({ session }) {
                   );
                 }
               })}
+              {historiqueUnifie.length > 5 && (
+                <div style={{ padding: "10px", textAlign: "center", borderTop: "1px solid #0f3460" }}>
+                  <button
+                    onClick={() => setShowAllHistory(true)}
+                    style={{
+                      background: "transparent",
+                      color: "#95a5a6",
+                      border: "1px solid #555",
+                      padding: "6px 16px",
+                      borderRadius: 6,
+                      cursor: "pointer",
+                      fontSize: 12,
+                      transition: "all 0.2s",
+                    }}
+                    onMouseEnter={(e) => { e.currentTarget.style.background = "#0f3460"; e.currentTarget.style.color = "white"; }}
+                    onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; e.currentTarget.style.color = "#95a5a6"; }}
+                  >
+                    📜 Voir les {historiqueUnifie.length} actions
+                  </button>
+                </div>
+              )}
             </div>
           </div>
-
+          
           <InventaireGlobal
             sessionId={sessionId}
             joueurNom="MJ"
@@ -539,8 +746,6 @@ export default function MJ({ session }) {
             actif={inventaireGlobalActif}
             onToggle={() => setInventaireGlobalActif(!inventaireGlobalActif)}
           />
-
-          <FichePersonnage sessionId={sessionId} joueurId={null} joueurNom="MJ" isMJ={true} />
 
         </div>
       </div>
@@ -625,7 +830,7 @@ export default function MJ({ session }) {
         </div>
       )}
 
-      {/* INFO-BULLE JOUEUR - 🔥 avec filtrage des champs techniques */}
+      {/* INFO-BULLE JOUEUR */}
       {joueurInfo && (
         <div
           style={{
@@ -734,6 +939,148 @@ export default function MJ({ session }) {
             cursor: "default",
           }}
           onClick={() => setJoueurInfo(null)}
+        />
+      )}
+
+      <style>{`
+        @keyframes fadeInPopup {
+          from {
+            opacity: 0;
+            transform: scale(0.95);
+          }
+          to {
+            opacity: 1;
+            transform: scale(1);
+          }
+        }
+      `}</style>
+                 {/* 🔥 POPUP - TOUT L'HISTORIQUE */}
+      {showAllHistory && (
+        <div style={{
+          position: "fixed",
+          top: 0,
+          left: 0,
+          right: 0,
+          bottom: 0,
+          background: "rgba(0, 0, 0, 0.85)",
+          backdropFilter: "blur(4px)",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          zIndex: 9999,
+          padding: 20,
+          animation: "fadeInPopup 0.3s ease",
+        }}>
+          <div style={{
+            background: "#1a1a2e",
+            border: "2px solid #e94560",
+            borderRadius: 16,
+            maxWidth: 800,
+            width: "100%",
+            maxHeight: "85vh",
+            display: "flex",
+            flexDirection: "column",
+            padding: 24,
+            boxShadow: "0 20px 60px rgba(233, 69, 96, 0.3)",
+          }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+              <h2 style={{ margin: 0, color: "#e94560", fontSize: "1.3rem" }}>
+                📜 Historique complet ({historiqueUnifie.length} actions)
+              </h2>
+              <button
+                onClick={() => setShowAllHistory(false)}
+                style={{
+                  background: "transparent",
+                  border: "none",
+                  color: "#95a5a6",
+                  fontSize: 24,
+                  cursor: "pointer",
+                  padding: "0 8px",
+                }}
+              >
+                ✕
+              </button>
+            </div>
+
+            <div style={{
+              flex: 1,
+              overflowY: "auto",
+              background: "#16213e",
+              borderRadius: 10,
+              padding: "4px 0",
+            }}>
+              {historiqueUnifie.map((item) => {
+                if (item.type === 'lancer') {
+                  const status = getStatus(item.valeur, item.bonus, item.total, item.faces, item.seuil, modeCritique);
+                  const nomCompetence = item.action_nom || "";
+                  
+                  return (
+                    <div key={item.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 14px", borderBottom: "1px solid #0f3460", opacity: item.secret ? 0.5 : 1 }}>
+                      <span style={{ color: item.auteur === "MJ" ? "#e94560" : "#95a5a6", fontSize: 12 }}>
+                        {item.auteur === "MJ" ? "⚔️ MJ" : `🎲 ${item.auteur}`}
+                        {nomCompetence && <span style={{ color: "#f1c40f", fontWeight: "bold" }}> a utilisé {nomCompetence}</span>}
+                        {!nomCompetence && <span> a lancé un d{item.faces}</span>}
+                        {item.secret && " 🔒"}
+                      </span>
+                      <span style={{ fontWeight: "bold", fontSize: 16, color: status ? colors[status.cls] : "#e0e0e0" }}>
+                        {item.total}
+                      </span>
+                      {status && <span style={{ color: colors[status.cls], fontSize: 11 }}>{status.label}</span>}
+                      <span style={{ color: "#555", fontSize: 10 }}>
+                        {new Date(item.created_at).toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" })}
+                      </span>
+                    </div>
+                  );
+                } else {
+                  const style = ACTION_STYLES[item.action] || { icon: "📋", color: "#95a5a6" };
+                  return (
+                    <div key={item.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 14px", borderBottom: "1px solid #0f3460" }}>
+                      <span style={{ fontSize: 12, color: "#95a5a6" }}>
+                        {style.icon} {item.details}
+                      </span>
+                      <span style={{ color: style.color, fontSize: 11, fontWeight: "bold" }}>
+                        {style.label}
+                      </span>
+                      <span style={{ color: "#555", fontSize: 10 }}>
+                        {new Date(item.created_at).toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" })}
+                      </span>
+                    </div>
+                  );
+                }
+              })}
+            </div>
+
+            <div style={{ textAlign: "center", marginTop: 16 }}>
+              <button
+                onClick={() => setShowAllHistory(false)}
+                style={{
+                  background: "#e94560",
+                  color: "white",
+                  border: "none",
+                  padding: "10px 30px",
+                  borderRadius: 8,
+                  fontWeight: "bold",
+                  fontSize: 14,
+                  cursor: "pointer",
+                  transition: "all 0.2s",
+                }}
+                onMouseEnter={(e) => { e.currentTarget.style.transform = "scale(1.05)"; }}
+                onMouseLeave={(e) => { e.currentTarget.style.transform = "scale(1)"; }}
+              >
+                ✕ Fermer
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 🔥 MODE COMBAT */}
+      {showCombat && (
+        <CombatModal
+          sessionId={sessionId}
+          joueurs={joueurs}
+          isMJ={true}
+          onClose={() => setShowCombat(false)}
         />
       )}
 
