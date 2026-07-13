@@ -15,10 +15,12 @@ const DEFAUTS = {
 };
 const DES = [4, 6, 8, 10, 12, 20, 100];
 
-export default function ConfigStats({ sessionId }) {
+export default function ConfigStats({ sessionId, showHeader = true }) {
   const [config, setConfig] = useState(null);
   const [seuils, setSeuils] = useState({});
-  const [showPanel, setShowPanel] = useState(false);
+  // 🔥 MODIFICATION - showPanel forcé à true dans la popup
+  const [showPanelInternal, setShowPanelInternal] = useState(false);
+  const showPanel = showHeader ? showPanelInternal : true;
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
@@ -70,18 +72,21 @@ export default function ConfigStats({ sessionId }) {
 
   return (
     <div style={{ fontFamily: "'Segoe UI', sans-serif" }}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
-        <h3 style={{ margin: 0, fontSize: "0.85rem", color: "#95a5a6", textTransform: "uppercase", letterSpacing: 1 }}>
-          ⚙️ Configuration des stats
-        </h3>
-        <button onClick={() => setShowPanel(!showPanel)} style={{
-          background: showPanel ? "#555" : "#0f3460", color: "white",
-          border: "1px solid #e94560", padding: "5px 12px", borderRadius: 6,
-          cursor: "pointer", fontSize: 11
-        }}>
-          {showPanel ? "Fermer" : "Configurer"}
-        </button>
-      </div>
+      {/* 🔥 MODIFICATION - Header optionnel avec showHeader */}
+      {showHeader && (
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+          <h3 style={{ margin: 0, fontSize: "0.85rem", color: "#95a5a6", textTransform: "uppercase", letterSpacing: 1 }}>
+            ⚙️ Configuration des stats
+          </h3>
+          <button onClick={() => setShowPanelInternal(!showPanelInternal)} style={{
+            background: showPanelInternal ? "#555" : "#0f3460", color: "white",
+            border: "1px solid #e94560", padding: "5px 12px", borderRadius: 6,
+            cursor: "pointer", fontSize: 11
+          }}>
+            {showPanelInternal ? "Fermer" : "Configurer"}
+          </button>
+        </div>
+      )}
 
       {showPanel && (
         <div style={{ background: "#0f3460", borderRadius: 10, padding: 14 }}>
