@@ -4,6 +4,7 @@ import InventaireJoueur from "./components/InventaireJoueur";
 import InventaireGlobal from "./components/InventaireGlobal";
 import LogsInventaire from "./components/LogsInventaire";
 import FichePersonnage from "./components/FichePersonnage";
+import CombatModal from "./components/CombatModal";
 
 
 const FACES = [4, 6, 8, 10, 12, 20, 100];
@@ -43,6 +44,10 @@ export default function Joueur() {
   const [history, setHistory] = useState([]);
   const [activeDie, setActiveDie] = useState(null);
   const [popupMJ, setPopupMJ] = useState(null);
+  
+  // 🔥 Pour le mode combat - s'ouvre automatiquement
+  const [showCombat, setShowCombat] = useState(false);
+  const [combatEnCours, setCombatEnCours] = useState(null);
 
   const lastLancerIdRef = useRef(null);
   const connexionTimeRef = useRef(null);
@@ -221,6 +226,62 @@ export default function Joueur() {
     return () => clearInterval(interval);
   }, [sessionId, connecte, modeCritique, chargerHistorique]);
 
+  // 🔥 Surveiller automatiquement les combats
+  useEffect(() => {
+    if (!sessionId) return;
+
+    const checkCombat = async () => {
+      const { data } = await supabase
+        .from("combats")
+        .select("id")
+        .eq("session_id", sessionId)
+        .eq("status", "en_cours")
+        .maybeSingle();
+
+      if (data) {
+        setCombatEnCours(data);
+        setShowCombat(true);
+      } else {
+        setShowCombat(false);
+        setCombatEnCours(null);
+      }
+    };
+
+    // Vérification initiale
+    checkCombat();
+
+    // WebSocket pour détecter les changements en temps réel
+    const channel = supabase
+      .channel(`combat-joueur-${sessionId}`)
+      .on("postgres_changes",
+        {
+          event: "INSERT",
+          schema: "public",
+          table: "combats",
+          filter: `session_id=eq.${sessionId}`,
+        },
+        () => {
+          // Un nouveau combat a été créé ! On l'ouvre automatiquement
+          checkCombat();
+        }
+      )
+      .on("postgres_changes",
+        {
+          event: "UPDATE",
+          schema: "public",
+          table: "combats",
+          filter: `session_id=eq.${sessionId}`,
+        },
+        () => {
+          // Le combat a été mis à jour (peut-être terminé)
+          checkCombat();
+        }
+      )
+      .subscribe();
+
+    return () => supabase.removeChannel(channel);
+  }, [sessionId]);
+
   const lancerDe = useCallback(async (faces) => {
     if (rolling || !joueurId) return;
     setActiveDie(faces);
@@ -361,7 +422,7 @@ export default function Joueur() {
         }
       `}</style>
 
-      {/* En-tête */}
+      {/* En-tête - PAS DE BOUTON COMBAT ICI */}
       <div style={{ background: "#16213e", borderBottom: "1px solid #0f3460", padding: "12px 24px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
         <h1 style={{ margin: 0, color: "#e94560", fontSize: "1.2rem" }}>🎲 Espace Joueur</h1>
         <span style={{ background: "#0f3460", color: "#e0e0e0", padding: "5px 14px", borderRadius: 20, fontSize: 13, fontWeight: "bold" }}>⚔️ {nom}</span>
@@ -489,6 +550,19 @@ export default function Joueur() {
         )}
 
       </div>
+
+      {/* 🔥 MODE COMBAT - JOUEUR (s'ouvre automatiquement quand le MJ le lance) */}
+      {showCombat && (
+        <CombatModal
+          sessionId={sessionId}
+          joueurs={[]}
+          joueurId={joueurId}
+          joueurNom={nom}
+          isMJ={false}
+          onClose={() => setShowCombat(false)}
+        />
+      )}
+
     </div>
   );
 }

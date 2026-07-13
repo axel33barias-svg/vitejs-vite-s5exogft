@@ -6,6 +6,7 @@ import InventaireGlobal from "./components/InventaireGlobal";
 import EnvoiObjetMJ from "./components/EnvoiObjetMJ";
 import ConfigStats from "./components/ConfigStats";
 import FichePersonnage from "./components/FichePersonnage";
+import CombatModal from "./components/CombatModal";
 
 const FACES = [4, 6, 8, 10, 12, 20, 100];
 
@@ -61,6 +62,8 @@ export default function MJ({ session }) {
   const [configAlreadyShown, setConfigAlreadyShown] = useState(false);
   const [joueurInfo, setJoueurInfo] = useState(null);
   const [showAllHistory, setShowAllHistory] = useState(false);
+  const [showCombat, setShowCombat] = useState(false);
+
 
   // 🔥 FIX - INITIALISATION DE LA SESSION AVEC GESTION D'ERREUR 409
   useEffect(() => {
