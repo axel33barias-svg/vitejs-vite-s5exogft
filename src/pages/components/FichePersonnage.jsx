@@ -2,17 +2,6 @@ import { useState, useEffect } from "react";
 import { supabase } from "../../supabase";
 import { getConfigStats, getSeuils } from "./ConfigStats";
 
-// ============================================================
-// 🧙 FICHE PERSONNAGE
-// Props :
-//   sessionId   — ID de la session
-//   joueurId    — ID du joueur
-//   joueurNom   — Nom du joueur
-//   isMJ        — true si MJ consulte
-//   onRoll      — callback quand joueur clique sur une stat
-//                 (stat, nomStat, valeur, de, seuil)
-// ============================================================
-
 const CLASSES = [
   { id: "guerrier",  label: "⚔️ Guerrier",  stats: { force: 5, agilite: 3, discretion: 1, intelligence: 2, perception: 2, charisme: 2, mental: 3, vitalite: 5 } },
   { id: "voleur",    label: "🗡️ Voleur",    stats: { force: 2, agilite: 5, discretion: 5, intelligence: 3, perception: 3, charisme: 2, mental: 2, vitalite: 2 } },
@@ -27,15 +16,14 @@ const STAT_ICONS = { force: "💪", agilite: "🏃", discretion: "🕵️", inte
 const MAX_STAT = 10;
 const POINTS_LIBRES_BASE = 15;
 
-export default function FichePersonnage({ sessionId, joueurId, joueurNom, isMJ = false, onRoll }) {
-  const [fiche, setFiche] = useState(null); // null = pas encore créée
+export default function FichePersonnage({ sessionId, joueurId, joueurNom, isMJ = false, onRoll, resetKey }) {
+  const [fiche, setFiche] = useState(null);
   const [stats, setStats] = useState(null);
   const [config, setConfig] = useState(null);
   const [seuils, setSeuils] = useState({});
   const [loading, setLoading] = useState(true);
 
-  // Formulaire création
-  const [etapeCreation, setEtapeCreation] = useState("infos"); // infos | classe | stats | recap
+  const [etapeCreation, setEtapeCreation] = useState("infos");
   const [formNom, setFormNom] = useState(joueurNom || "");
   const [formAge, setFormAge] = useState("");
   const [formEspece, setFormEspece] = useState("");
@@ -44,7 +32,6 @@ export default function FichePersonnage({ sessionId, joueurId, joueurNom, isMJ =
   const [formStats, setFormStats] = useState({});
   const [pointsRestants, setPointsRestants] = useState(POINTS_LIBRES_BASE);
 
-  // Popup résultat jet
   const [popupRoll, setPopupRoll] = useState(null);
 
   useEffect(() => {
@@ -55,7 +42,6 @@ export default function FichePersonnage({ sessionId, joueurId, joueurNom, isMJ =
       setConfig(cfg);
       setSeuils(seuilsData);
 
-      // Cherche une fiche existante
       const query = supabase
         .from("personnages")
         .select("*, stats_personnage(*)")
@@ -67,20 +53,39 @@ export default function FichePersonnage({ sessionId, joueurId, joueurNom, isMJ =
       if (data && data.length > 0) {
         setFiche(data[0]);
         setStats(data[0].stats_personnage?.[0] || null);
+      } else {
+        setFiche(null);
+        setStats(null);
       }
       setLoading(false);
     };
-    if (sessionId && (joueurId || isMJ)) charger();
-  }, [sessionId, joueurId, isMJ]);
 
-  // Initialise les stats quand une classe est choisie
+    if (sessionId && (joueurId || isMJ)) charger();
+
+    // ✅ Écoute les changements de statut en temps réel (joueur seulement)
+    if (!sessionId || isMJ || !joueurId) return;
+
+    const channel = supabase
+      .channel(`personnage-statut-${joueurId}-${Date.now()}`)
+      .on("postgres_changes", {
+        event: "UPDATE",
+        schema: "public",
+        table: "personnages",
+        filter: `joueur_id=eq.${joueurId}`,
+      }, (payload) => {
+        setFiche((prev) => ({ ...prev, ...payload.new }));
+      })
+      .subscribe();
+
+    return () => supabase.removeChannel(channel);
+  }, [sessionId, joueurId, isMJ, resetKey]);
+
   const choisirClasse = (classe) => {
     setFormClasse(classe);
     setFormStats({ ...classe.stats });
     setPointsRestants(POINTS_LIBRES_BASE);
   };
 
-  // Ajouter/retirer un point d'une stat
   const modifierStat = (stat, delta) => {
     const classe = CLASSES.find(c => c.id === formClasse?.id);
     const min = classe?.stats[stat] || 0;
@@ -92,7 +97,6 @@ export default function FichePersonnage({ sessionId, joueurId, joueurNom, isMJ =
     setPointsRestants((prev) => prev - delta);
   };
 
-  // Soumettre la fiche
   const soumettreFiche = async () => {
     const { data: nouvelleFiche } = await supabase
       .from("personnages")
@@ -119,7 +123,6 @@ export default function FichePersonnage({ sessionId, joueurId, joueurNom, isMJ =
     }
   };
 
-  // Approuver / Rejeter (MJ)
   const approuver = async (ficheId) => {
     await supabase.from("personnages").update({ statut: "approuve" }).eq("id", ficheId);
     setFiche((prev) => ({ ...prev, statut: "approuve" }));
@@ -130,7 +133,6 @@ export default function FichePersonnage({ sessionId, joueurId, joueurNom, isMJ =
     setFiche((prev) => ({ ...prev, statut: "rejete" }));
   };
 
-  // Clic sur une stat — lance le dé automatiquement
   const clickStat = async (stat) => {
     if (isMJ || !fiche || fiche.statut !== "approuve") return;
     const nomStat = config?.[`${stat}_nom`] || stat;
@@ -154,7 +156,6 @@ export default function FichePersonnage({ sessionId, joueurId, joueurNom, isMJ =
     setPopupRoll(resultat);
     setTimeout(() => setPopupRoll(null), 6000);
 
-    // Envoie dans l'historique Supabase
     await supabase.from("lancers").insert([{
       session_id: sessionId,
       auteur: joueurNom,
@@ -163,7 +164,7 @@ export default function FichePersonnage({ sessionId, joueurId, joueurNom, isMJ =
       total,
       faces: de,
       seuil,
-      action_nom: nomStat,  // ← AJOUT : nom de la compétence
+      action_nom: nomStat,
     }]);
 
     if (onRoll) onRoll(resultat);
@@ -173,10 +174,8 @@ export default function FichePersonnage({ sessionId, joueurId, joueurNom, isMJ =
 
   if (loading) return <div style={{ color: "#95a5a6", fontSize: 13, padding: 10 }}>Chargement…</div>;
 
-  // ── VUE MJ — liste de toutes les fiches ──
   if (isMJ) return <VueMJ sessionId={sessionId} config={config} approuver={approuver} rejeter={rejeter} />;
 
-  // ── PAS DE FICHE — formulaire de création ──
   if (!fiche) return (
     <FormCreation
       etape={etapeCreation} setEtape={setEtapeCreation}
@@ -191,7 +190,6 @@ export default function FichePersonnage({ sessionId, joueurId, joueurNom, isMJ =
     />
   );
 
-  // ── FICHE EN ATTENTE ──
   if (fiche.statut === "en_attente") return (
     <div style={{ background: "#16213e", border: "1px solid #f1c40f", borderRadius: 10, padding: 20, textAlign: "center" }}>
       <div style={{ fontSize: 32, marginBottom: 8 }}>⏳</div>
@@ -201,7 +199,6 @@ export default function FichePersonnage({ sessionId, joueurId, joueurNom, isMJ =
     </div>
   );
 
-  // ── FICHE REJETÉE ──
   if (fiche.statut === "rejete") return (
     <div style={{ background: "#16213e", border: "1px solid #e94560", borderRadius: 10, padding: 20, textAlign: "center" }}>
       <div style={{ fontSize: 32, marginBottom: 8 }}>❌</div>
@@ -213,10 +210,8 @@ export default function FichePersonnage({ sessionId, joueurId, joueurNom, isMJ =
     </div>
   );
 
-  // ── FICHE APPROUVÉE — vue joueur active ──
   return (
     <div style={{ fontFamily: "'Segoe UI', sans-serif" }}>
-      {/* Popup résultat jet */}
       {popupRoll && (
         <div style={{
           position: "fixed", top: 20, left: "50%", transform: "translateX(-50%)",
@@ -225,9 +220,7 @@ export default function FichePersonnage({ sessionId, joueurId, joueurNom, isMJ =
           boxShadow: `0 0 30px ${popupRoll.couleur}66`, zIndex: 1000,
           minWidth: 260, animation: "fadeIn 0.3s ease",
         }}>
-          <div style={{ fontSize: 11, color: "#95a5a6", textTransform: "uppercase", letterSpacing: 1, marginBottom: 6 }}>
-            {popupRoll.nomStat}
-          </div>
+          <div style={{ fontSize: 11, color: "#95a5a6", textTransform: "uppercase", letterSpacing: 1, marginBottom: 6 }}>{popupRoll.nomStat}</div>
           <div style={{ fontSize: 42, fontWeight: "bold", color: popupRoll.couleur, lineHeight: 1 }}>{popupRoll.total}</div>
           <div style={{ fontSize: 12, color: "#95a5a6", marginTop: 6 }}>
             Jet : {popupRoll.jet} · Bonus {popupRoll.nomStat} : +{popupRoll.valeurStat} · Total : {popupRoll.total}
@@ -244,7 +237,6 @@ export default function FichePersonnage({ sessionId, joueurId, joueurNom, isMJ =
         }
       `}</style>
 
-      {/* En-tête fiche */}
       <div style={{ background: "#16213e", border: "1px solid #4ee44e", borderRadius: 10, padding: 14, marginBottom: 12 }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
           <div>
@@ -260,7 +252,6 @@ export default function FichePersonnage({ sessionId, joueurId, joueurNom, isMJ =
         </div>
       </div>
 
-      {/* Stats cliquables */}
       <div style={{ marginBottom: 8 }}>
         <div style={{ fontSize: 11, color: "#95a5a6", textTransform: "uppercase", letterSpacing: 1, marginBottom: 8 }}>
           Statistiques — cliquez pour agir
@@ -296,7 +287,6 @@ export default function FichePersonnage({ sessionId, joueurId, joueurNom, isMJ =
   );
 }
 
-// ── Sous-composant : Vue MJ (toutes les fiches) ──
 function VueMJ({ sessionId, config, approuver, rejeter }) {
   const [fiches, setFiches] = useState([]);
 
@@ -349,7 +339,6 @@ function VueMJ({ sessionId, config, approuver, rejeter }) {
               </span>
             </div>
 
-            {/* Stats */}
             {s && (
               <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 6, marginBottom: 10 }}>
                 {STATS.map((stat) => (
@@ -361,7 +350,6 @@ function VueMJ({ sessionId, config, approuver, rejeter }) {
               </div>
             )}
 
-            {/* Boutons MJ */}
             {f.statut === "en_attente" && (
               <div style={{ display: "flex", gap: 8 }}>
                 <button onClick={() => { approuver(f.id); setFiches(prev => prev.map(x => x.id === f.id ? { ...x, statut: "approuve" } : x)); }}
@@ -381,7 +369,6 @@ function VueMJ({ sessionId, config, approuver, rejeter }) {
   );
 }
 
-// ── Sous-composant : Résumé fiche ──
 function FicheResume({ fiche, stats, config }) {
   return (
     <div style={{ marginTop: 12, textAlign: "left" }}>
@@ -397,7 +384,6 @@ function FicheResume({ fiche, stats, config }) {
   );
 }
 
-// ── Sous-composant : Formulaire création ──
 function FormCreation({ etape, setEtape, formNom, setFormNom, formAge, setFormAge, formEspece, setFormEspece, formClasse, choisirClasse, formDesc, setFormDesc, formStats, modifierStat, pointsRestants, config, soumettre }) {
   const inputStyle = { width: "100%", background: "#1a1a2e", border: "1px solid #0f3460", color: "white", padding: "10px 12px", borderRadius: 8, fontSize: 13, boxSizing: "border-box", outline: "none", marginBottom: 10 };
 
@@ -405,23 +391,18 @@ function FormCreation({ etape, setEtape, formNom, setFormNom, formAge, setFormAg
     <div style={{ background: "#16213e", border: "1px solid #0f3460", borderRadius: 12, padding: 20 }}>
       <h3 style={{ color: "#e94560", marginTop: 0, textAlign: "center" }}>📜 Créer mon personnage</h3>
 
-      {/* Étape : infos */}
       {etape === "infos" && (
         <div>
           <label style={{ fontSize: 11, color: "#95a5a6", textTransform: "uppercase", letterSpacing: 1 }}>Nom du personnage *</label>
           <input value={formNom} onChange={(e) => setFormNom(e.target.value)} placeholder="Ex: Aragorn" style={{ ...inputStyle, border: "1px solid #e94560" }} />
-
           <label style={{ fontSize: 11, color: "#95a5a6", textTransform: "uppercase", letterSpacing: 1 }}>Âge (optionnel)</label>
           <input value={formAge} onChange={(e) => setFormAge(e.target.value)} placeholder="Ex: 27 ans, inconnu, ancien..." style={inputStyle} />
-
           <label style={{ fontSize: 11, color: "#95a5a6", textTransform: "uppercase", letterSpacing: 1 }}>Espèce / Race (optionnel)</label>
           <input value={formEspece} onChange={(e) => setFormEspece(e.target.value)} placeholder="Ex: Humain, Elfe, Draconide..." style={inputStyle} />
-
           <label style={{ fontSize: 11, color: "#95a5a6", textTransform: "uppercase", letterSpacing: 1 }}>Description RP (optionnel)</label>
           <textarea value={formDesc} onChange={(e) => setFormDesc(e.target.value)} placeholder="Décrivez votre personnage..."
             style={{ ...inputStyle, height: 80, resize: "vertical", fontFamily: "inherit" }}
           />
-
           <button onClick={() => setEtape("classe")} disabled={!formNom.trim()}
             style={{ width: "100%", background: formNom.trim() ? "#e94560" : "#333", color: "white", border: "none", padding: "12px", borderRadius: 8, fontWeight: "bold", fontSize: 14, cursor: formNom.trim() ? "pointer" : "not-allowed" }}>
             Suivant → Choisir ma classe
@@ -429,7 +410,6 @@ function FormCreation({ etape, setEtape, formNom, setFormNom, formAge, setFormAg
         </div>
       )}
 
-      {/* Étape : classe */}
       {etape === "classe" && (
         <div>
           <p style={{ color: "#95a5a6", fontSize: 13, marginTop: 0 }}>Choisissez votre classe — elle définit vos statistiques de base</p>
@@ -458,7 +438,6 @@ function FormCreation({ etape, setEtape, formNom, setFormNom, formAge, setFormAg
         </div>
       )}
 
-      {/* Étape : stats */}
       {etape === "stats" && (
         <div>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
@@ -497,7 +476,6 @@ function FormCreation({ etape, setEtape, formNom, setFormNom, formAge, setFormAg
         </div>
       )}
 
-      {/* Étape : recap */}
       {etape === "recap" && (
         <div>
           <p style={{ color: "#95a5a6", fontSize: 13, marginTop: 0, textAlign: "center" }}>Vérifiez votre fiche avant de la soumettre au MJ</p>

@@ -1,71 +1,60 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { supabase } from "../../supabase";
 import { logAction } from "./InventaireJoueur";
 
-// ============================================================
-// 🌍 INVENTAIRE GLOBAL
-// Props :
-//   sessionId     — ID de la session
-//   joueurId      — ID du joueur (null si MJ)
-//   joueurNom     — Nom du joueur
-//   isMJ          — true si MJ
-//   actif         — inventaire global activé ou non
-//   onToggle      — callback MJ pour activer/désactiver
-// ============================================================
-
-export default function InventaireGlobal({ sessionId, joueurId, joueurNom, isMJ = false, actif = false, onToggle }) {
+export default function InventaireGlobal({ sessionId, resetKey, joueurId, joueurNom, isMJ = false, actif = false, onToggle }) {
   const [objets, setObjets] = useState([]);
-  const [confirmerVol, setConfirmerVol] = useState(null); // objet en cours de vol
-  const [confirmerPrise, setConfirmerPrise] = useState(null); // objet en cours de prise
-
-  // Charge l'inventaire global
-  const charger = useCallback(async () => {
-    const { data } = await supabase
-      .from("inventaire_global")
-      .select("*")
-      .eq("session_id", sessionId)
-      .order("created_at", { ascending: true });
-    if (data) setObjets(data);
-  }, [sessionId]);
-
-// ✅ NOUVEAU - WebSocket pour l'inventaire global
-useEffect(() => {
-  if (!sessionId) return;
-  if (!actif && !isMJ) return;
-
-  // Charge une fois au début
-  charger();
-
-  // Canal pour le butin commun
-  const channel = supabase
-    .channel(`inventaire-global-${sessionId}`)
-    .on(
-      "postgres_changes",
-      {
-        event: "*", // INSERT, UPDATE, DELETE
-        schema: "public",
-        table: "inventaire_global",
-        filter: `session_id=eq.${sessionId}`,
-      },
-      () => {
-        // Un changement dans le butin → recharge
-        charger();
-      }
-    )
-    .subscribe();
-
-  return () => {
-    supabase.removeChannel(channel);
-  };
-}, [sessionId, actif, isMJ, charger]);
-
-  // MJ — ajouter un objet directement dans le global
+  const [confirmerVol, setConfirmerVol] = useState(null);
+  const [confirmerPrise, setConfirmerPrise] = useState(null);
   const [showForm, setShowForm] = useState(false);
   const [newNom, setNewNom] = useState("");
   const [newDesc, setNewDesc] = useState("");
   const [newQte, setNewQte] = useState(1);
   const [newIcon, setNewIcon] = useState("📦");
+
   const ICONS = ["📦", "⚔️", "🛡️", "🧪", "💰", "🗝️", "📜", "🏹", "🔮", "💎", "🍖", "🧲"];
+
+  const channelRef = useRef(null);
+  const isMountedRef = useRef(true);
+
+  const charger = useCallback(async () => {
+    if (!sessionId) return;
+    const { data } = await supabase
+      .from("inventaire_global")
+      .select("*")
+      .eq("session_id", sessionId)
+      .order("created_at", { ascending: true });
+    if (data && isMountedRef.current) setObjets(data);
+  }, [sessionId]);
+
+  useEffect(() => {
+    isMountedRef.current = true;
+    if (!sessionId) return;
+    if (!actif && !isMJ) return;
+
+    charger();
+
+    const channelName = `inventaire-global-${sessionId}-${Date.now()}`;
+    const newChannel = supabase.channel(channelName);
+    channelRef.current = newChannel;
+
+    newChannel
+      .on("postgres_changes", {
+        event: "*",
+        schema: "public",
+        table: "inventaire_global",
+        filter: `session_id=eq.${sessionId}`,
+      }, () => {
+        if (isMountedRef.current) charger();
+      })
+      .subscribe();
+
+    return () => {
+      isMountedRef.current = false;
+      supabase.removeChannel(newChannel).catch(console.warn);
+      channelRef.current = null;
+    };
+  }, [sessionId, actif, isMJ, charger, resetKey]);
 
   const ajouterObjetMJ = async () => {
     if (!newNom.trim()) return;
@@ -81,47 +70,35 @@ useEffect(() => {
     }
   };
 
-  // Supprimer un objet (MJ seulement)
   const supprimerObjet = async (objet) => {
     await supabase.from("inventaire_global").delete().eq("id", objet.id);
     await logAction(sessionId, "remove", "MJ", objet.nom, `Le MJ a retiré "${objet.nom}" du butin commun`, true);
     setObjets((prev) => prev.filter((o) => o.id !== objet.id));
   };
 
-  // Prendre un objet (joueur → son inventaire)
   const prendreObjet = async (objet) => {
     await supabase.from("inventaire_global").delete().eq("id", objet.id);
     await supabase.from("objets").insert([{
-      session_id: sessionId,
-      joueur_id: joueurId,
-      nom: objet.nom,
-      description: objet.description,
-      quantite: objet.quantite,
-      icon: objet.icon,
+      session_id: sessionId, joueur_id: joueurId,
+      nom: objet.nom, description: objet.description,
+      quantite: objet.quantite, icon: objet.icon,
     }]);
     await logAction(sessionId, "take", joueurNom, objet.nom, `${joueurNom} a pris "${objet.nom}" dans le butin commun`, true);
     setObjets((prev) => prev.filter((o) => o.id !== objet.id));
     setConfirmerPrise(null);
   };
 
-  // Vol — résultat du mini-jeu de dés
   const tenterVol = async (objet, resultat) => {
     setConfirmerVol(null);
-
     if (resultat === "critique_succes") {
-      // Transfert silencieux
       await supabase.from("inventaire_global").delete().eq("id", objet.id);
       await supabase.from("objets").insert([{
         session_id: sessionId, joueur_id: joueurId,
         nom: objet.nom, description: objet.description,
         quantite: objet.quantite, icon: objet.icon,
       }]);
-      await logAction(sessionId, "steal", joueurNom, objet.nom,
-        `${joueurNom} a volé "${objet.nom}" (réussite critique — discret)`,
-        false // invisible pour les autres joueurs
-      );
+      await logAction(sessionId, "steal", joueurNom, objet.nom, `${joueurNom} a volé "${objet.nom}" (réussite critique — discret)`, false);
       setObjets((prev) => prev.filter((o) => o.id !== objet.id));
-
     } else if (resultat === "succes") {
       await supabase.from("inventaire_global").delete().eq("id", objet.id);
       await supabase.from("objets").insert([{
@@ -129,18 +106,10 @@ useEffect(() => {
         nom: objet.nom, description: objet.description,
         quantite: objet.quantite, icon: objet.icon,
       }]);
-      await logAction(sessionId, "steal", joueurNom, objet.nom,
-        `Un objet a mystérieusement disparu du butin commun...`,
-        true
-      );
+      await logAction(sessionId, "steal", joueurNom, objet.nom, `Un objet a mystérieusement disparu du butin commun...`, true);
       setObjets((prev) => prev.filter((o) => o.id !== objet.id));
-
     } else if (resultat === "echec_critique") {
-      // Rien ne bouge — notification publique
-      await logAction(sessionId, "steal", joueurNom, objet.nom,
-        `🚨 ${joueurNom} a tenté de voler "${objet.nom}" et s'est fait prendre !`,
-        true
-      );
+      await logAction(sessionId, "steal", joueurNom, objet.nom, `🚨 ${joueurNom} a tenté de voler "${objet.nom}" et s'est fait prendre !`, true);
     }
   };
 
@@ -154,21 +123,17 @@ useEffect(() => {
     <div style={{ fontFamily: "'Segoe UI', sans-serif" }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
         <h3 style={{ margin: 0, fontSize: "0.85rem", color: "#95a5a6", textTransform: "uppercase", letterSpacing: 1 }}>
-          🌍 Butin commun {actif ? <span style={{ color: "#4ee44e", fontSize: 10 }}>● Actif</span> : <span style={{ color: "#e94560", fontSize: 10 }}>● Inactif</span>}
+          🌍 Butin commun {actif
+            ? <span style={{ color: "#4ee44e", fontSize: 10 }}>● Actif</span>
+            : <span style={{ color: "#e94560", fontSize: 10 }}>● Inactif</span>}
         </h3>
         <div style={{ display: "flex", gap: 8 }}>
           {isMJ && (
             <>
-              <button onClick={() => setShowForm(!showForm)} style={{
-                background: showForm ? "#555" : "#0f3460", color: "white",
-                border: "1px solid #e94560", padding: "5px 10px", borderRadius: 6, cursor: "pointer", fontSize: 11
-              }}>
+              <button onClick={() => setShowForm(!showForm)} style={{ background: showForm ? "#555" : "#0f3460", color: "white", border: "1px solid #e94560", padding: "5px 10px", borderRadius: 6, cursor: "pointer", fontSize: 11 }}>
                 {showForm ? "Annuler" : "+ Loot"}
               </button>
-              <button onClick={onToggle} style={{
-                background: actif ? "#c0392b" : "#27ae60", color: "white",
-                border: "none", padding: "5px 10px", borderRadius: 6, cursor: "pointer", fontSize: 11, fontWeight: "bold"
-              }}>
+              <button onClick={onToggle} style={{ background: actif ? "#c0392b" : "#27ae60", color: "white", border: "none", padding: "5px 10px", borderRadius: 6, cursor: "pointer", fontSize: 11, fontWeight: "bold" }}>
                 {actif ? "Désactiver" : "Activer"}
               </button>
             </>
@@ -176,15 +141,11 @@ useEffect(() => {
         </div>
       </div>
 
-      {/* Formulaire MJ */}
       {isMJ && showForm && (
         <div style={{ background: "#0f3460", borderRadius: 10, padding: 14, marginBottom: 10 }}>
           <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 10 }}>
             {ICONS.map((ic) => (
-              <button key={ic} onClick={() => setNewIcon(ic)} style={{
-                fontSize: 18, background: newIcon === ic ? "#e94560" : "#16213e",
-                border: "none", borderRadius: 6, padding: "4px 8px", cursor: "pointer",
-              }}>{ic}</button>
+              <button key={ic} onClick={() => setNewIcon(ic)} style={{ fontSize: 18, background: newIcon === ic ? "#e94560" : "#16213e", border: "none", borderRadius: 6, padding: "4px 8px", cursor: "pointer" }}>{ic}</button>
             ))}
           </div>
           <input value={newNom} onChange={(e) => setNewNom(e.target.value)} placeholder="Nom du loot *"
@@ -200,19 +161,15 @@ useEffect(() => {
             />
           </div>
           <button onClick={ajouterObjetMJ} disabled={!newNom.trim()}
-            style={{ width: "100%", background: newNom.trim() ? "#e94560" : "#333", color: "white", border: "none", padding: "10px", borderRadius: 8, fontWeight: "bold", fontSize: 14, cursor: newNom.trim() ? "pointer" : "not-allowed" }}
-          >
+            style={{ width: "100%", background: newNom.trim() ? "#e94560" : "#333", color: "white", border: "none", padding: "10px", borderRadius: 8, fontWeight: "bold", fontSize: 14, cursor: newNom.trim() ? "pointer" : "not-allowed" }}>
             ✅ Ajouter au butin
           </button>
         </div>
       )}
 
-      {/* Confirmation prise */}
       {confirmerPrise && (
         <div style={{ background: "#16213e", border: "1px solid #4ee44e", borderRadius: 10, padding: 14, marginBottom: 10, textAlign: "center" }}>
-          <p style={{ color: "white", margin: "0 0 10px", fontSize: 14 }}>
-            Prendre <strong>{confirmerPrise.icon} {confirmerPrise.nom}</strong> ?
-          </p>
+          <p style={{ color: "white", margin: "0 0 10px", fontSize: 14 }}>Prendre <strong>{confirmerPrise.icon} {confirmerPrise.nom}</strong> ?</p>
           <div style={{ display: "flex", gap: 8, justifyContent: "center" }}>
             <button onClick={() => prendreObjet(confirmerPrise)} style={{ background: "#4ee44e", color: "#1a1a2e", border: "none", padding: "8px 16px", borderRadius: 6, fontWeight: "bold", cursor: "pointer" }}>✅ Oui</button>
             <button onClick={() => setConfirmerPrise(null)} style={{ background: "#0f3460", color: "white", border: "none", padding: "8px 16px", borderRadius: 6, cursor: "pointer" }}>Annuler</button>
@@ -220,7 +177,6 @@ useEffect(() => {
         </div>
       )}
 
-      {/* Confirmation vol */}
       {confirmerVol && (
         <div style={{ background: "#16213e", border: "1px solid #f1c40f", borderRadius: 10, padding: 14, marginBottom: 10, textAlign: "center" }}>
           <p style={{ color: "#f1c40f", margin: "0 0 6px", fontSize: 13, fontWeight: "bold" }}>🎭 Tentative de vol — résultat ?</p>
@@ -234,7 +190,6 @@ useEffect(() => {
         </div>
       )}
 
-      {/* Liste */}
       {objets.length === 0 ? (
         <div style={{ background: "#16213e", border: "1px solid #0f3460", borderRadius: 8, padding: 16, textAlign: "center", color: "#555", fontSize: 13 }}>
           Aucun objet dans le butin commun
@@ -253,12 +208,8 @@ useEffect(() => {
               </div>
               {!isMJ && joueurId && (
                 <div style={{ display: "flex", gap: 6 }}>
-                  <button onClick={() => setConfirmerPrise(o)} style={{ background: "#0f3460", color: "#4ee44e", border: "1px solid #4ee44e", padding: "4px 8px", borderRadius: 5, cursor: "pointer", fontSize: 11 }}>
-                    ⬆ Prendre
-                  </button>
-                  <button onClick={() => setConfirmerVol(o)} style={{ background: "#0f3460", color: "#f1c40f", border: "1px solid #f1c40f", padding: "4px 8px", borderRadius: 5, cursor: "pointer", fontSize: 11 }}>
-                    🎭 Voler
-                  </button>
+                  <button onClick={() => setConfirmerPrise(o)} style={{ background: "#0f3460", color: "#4ee44e", border: "1px solid #4ee44e", padding: "4px 8px", borderRadius: 5, cursor: "pointer", fontSize: 11 }}>⬆ Prendre</button>
+                  <button onClick={() => setConfirmerVol(o)} style={{ background: "#0f3460", color: "#f1c40f", border: "1px solid #f1c40f", padding: "4px 8px", borderRadius: 5, cursor: "pointer", fontSize: 11 }}>🎭 Voler</button>
                 </div>
               )}
               {isMJ && (
